@@ -1,4 +1,4 @@
-# Clinical Trials Hub: A Unified Search and Information Extraction Platform
+# Clinical Trials Hub: A Unified Platform for Clinical Trial Search and Information Extraction
 
 A comprehensive platform that integrates PubMed articles and ClinicalTrials.gov data for unified search and analysis with automatic information extraction capabilities.
 
@@ -15,16 +15,13 @@ A comprehensive platform that integrates PubMed articles and ClinicalTrials.gov 
 
 ---
 
-## Quick Start (Docker)
-
-> **Recommended for most users.**
-> Run the entire platform with minimal setup using Docker Compose.
+## Option 1: Quick Start with Docker
 
 ### Steps
 
 ```bash
 # 1. Clone repository
-git clone [repository-url]
+git clone https://github.com/jiwoo-jus/clinical-trials-hub.git
 cd clinical-trials-hub
 
 # 2. Setup environment files
@@ -39,19 +36,31 @@ docker-compose up --build
 
 ---
 
-## Manual Installation (Without Docker)
+## Option 2: Manual Installation Without Docker
 
-> **For development.**
-> Set up backend and frontend environments manually.
+### Steps
+
+```bash
+# 1. Clone repository
+git clone https://github.com/jiwoo-jus/clinical-trials-hub.git
+cd clinical-trials-hub
+
+# 2. Setup environment files
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+
+# 3. Configure environment variables in backend/.env and frontend/.env
+```
 
 ### Backend Setup
 
 ```bash
 cd backend
-conda install pip # optional, if you prefer conda
+
+conda install -c conda-forge pip # optional, if you prefer conda
+
 pip install -r requirements.txt
-cp .env.example .env
-# Configure .env with your credentials
+
 python app.py
 ```
 
@@ -59,14 +68,17 @@ python app.py
 
 ```bash
 cd frontend
-conda install -c conda-forge nodejs #optional, if you prefer conda
+
+conda install -c conda-forge nodejs # optional, if you prefer conda
+
 npm install
-cp .env.example .env
-# Configure .env with your credentials
+
 npm start
 ```
+
+---
 
 ## Access URLs
 
 - Frontend: http://localhost:3000
-- Backend API: http://localhost:5050
+- Backend API Docs: http://localhost:5050/docs
