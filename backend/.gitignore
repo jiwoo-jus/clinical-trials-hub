@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.env
+.venv/
+env/
+venv/
+env.yaml
+
+# log
+logs/
+*.log
+
+# VSCode Setting
+.vscode/
+
+# Anaconda
+*.conda
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+
+# ETC
+# test_service.py
+sample
+cache
+TEMP
+*copy*
+*test*
+
+env.cloud.yaml
