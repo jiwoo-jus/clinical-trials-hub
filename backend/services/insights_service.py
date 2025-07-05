@@ -110,20 +110,44 @@ class InsightsService:
         Generate AI insights from detailed results
         """
         try:
+            logger.info(f"Starting AI insights generation for {len(detailed_results)} results")
+            
             # Prepare data summary for AI
             summary_data = self._prepare_data_summary(detailed_results)
+            logger.info(f"Prepared summary data: {len(summary_data)} fields")
             
-            # Create prompt for insights generation
-            prompt = self._create_insights_prompt(summary_data, applied_filters)
+            # Create prompt for insights generation (now includes detailed results)
+            prompt = self._create_insights_prompt(summary_data, detailed_results, applied_filters)
+            logger.info(f"Created prompt with length: {len(prompt)} characters")
+            
+            # DEBUG: Print the actual prompt content
+            logger.info("=== DEBUG: ACTUAL PROMPT CONTENT ===")
+            logger.info(prompt)
+            logger.info("=== END PROMPT CONTENT ===")
+            
+            print("=== DEBUG: ACTUAL PROMPT CONTENT ===")
+            print(prompt)
+            print("=== END PROMPT CONTENT ===")
             
             # Generate insights using OpenAI
             response = self.openai_service.generate_completion(
                 prompt=prompt,
                 system_message="You are an expert clinical research analyst. Provide comprehensive, actionable insights about clinical trials and research papers. Respond only with valid JSON.",
-                max_tokens=1500,
+                max_tokens=2000,  # Increased to handle larger prompt with detailed data
                 temperature=0.3,
                 response_format="json"
             )
+            
+            logger.info(f"Received OpenAI response with length: {len(response) if response else 0}")
+            
+            # DEBUG: Print the actual OpenAI response
+            logger.info("=== DEBUG: OPENAI RESPONSE ===")
+            logger.info(response)
+            logger.info("=== END OPENAI RESPONSE ===")
+            
+            print("=== DEBUG: OPENAI RESPONSE ===")
+            print(response)
+            print("=== END OPENAI RESPONSE ===")
             
             # Parse and structure the insights
             insights = self._parse_insights_response(response)
@@ -132,6 +156,8 @@ class InsightsService:
             
         except Exception as e:
             logger.error(f"Error generating AI insights: {str(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return {
                 'summary': 'Unable to generate insights at this time.',
                 'key_findings': [],
@@ -172,8 +198,8 @@ class InsightsService:
             # Extract conditions and interventions
             if 'conditions' in metadata:
                 summary['conditions'].update(metadata['conditions'])
-            if 'interventions' in metadata:
-                summary['interventions'].update(metadata['interventions'])
+            if 'intervention_names' in metadata:
+                summary['interventions'].update(metadata['intervention_names'])
             
             # Extract study information
             if 'phase' in metadata:
@@ -204,16 +230,19 @@ class InsightsService:
         
         return summary
     
-    def _create_insights_prompt(self, summary_data: Dict[str, Any], applied_filters: Optional[Dict] = None) -> str:
+    def _create_insights_prompt(self, summary_data: Dict[str, Any], detailed_results: List[Dict], applied_filters: Optional[Dict] = None) -> str:
         """
-        Create a prompt for AI insights generation
+        Create a prompt for AI insights generation including detailed results data
         """
         filter_context = ""
         if applied_filters:
             filter_context = f"\n\nNote: The results have been filtered with the following criteria: {json.dumps(applied_filters, indent=2)}"
         
+        # Prepare detailed results data for the prompt
+        detailed_items_text = self._format_detailed_results_for_prompt(detailed_results)
+        
         prompt = f"""
-Based on the following clinical research data summary, provide comprehensive insights and analysis:
+Based on the following clinical research data summary and detailed results, provide comprehensive insights and analysis:
 
 Data Summary:
 - Total items analyzed: {summary_data['total_items']}
@@ -228,6 +257,9 @@ Study Types: {', '.join(summary_data['study_types'])}
 Top Journals: {', '.join(summary_data['journals'][:3])}
 
 Recent Studies: {json.dumps(summary_data['recent_studies'], indent=2)}
+
+Detailed Results Data:
+{detailed_items_text}
 {filter_context}
 
 Please provide insights in the following JSON format:
@@ -255,6 +287,107 @@ Please provide insights in the following JSON format:
         
         return prompt
     
+    def _format_detailed_results_for_prompt(self, detailed_results: List[Dict]) -> str:
+        """
+        Format detailed results data for inclusion in the AI prompt
+        """
+        try:
+            formatted_items = []
+            
+            for i, item in enumerate(detailed_results[:10], 1):  # Limit to max 10 items
+                try:
+                    metadata = item.get('metadata', {})
+                    item_type = metadata.get('type', 'Unknown')
+                    
+                    # Basic metadata
+                    item_text = f"Item {i} ({item_type}):\n"
+                    item_text += f"- Title: {metadata.get('title', 'N/A')}\n"
+                    
+                    if item_type == 'PM':
+                        # PubMed specific data
+                        item_text += f"- PMID: {metadata.get('pmid', 'N/A')}\n"
+                        item_text += f"- Journal: {metadata.get('journal', 'N/A')}\n"
+                        item_text += f"- Publication Date: {metadata.get('pubDate', 'N/A')}\n"
+                        item_text += f"- Authors: {', '.join(metadata.get('authors', [])[:3])}\n"  # First 3 authors
+                        
+                        # Abstract
+                        abstract = metadata.get('abstract', '')
+                        if isinstance(abstract, dict):
+                            abstract_text = ' '.join(str(v) for v in abstract.values() if v)
+                        elif isinstance(abstract, str):
+                            abstract_text = abstract
+                        else:
+                            abstract_text = 'N/A'
+                        
+                        if abstract_text and abstract_text != 'N/A':
+                            # Truncate abstract if too long
+                            abstract_text = abstract_text[:500] + '...' if len(abstract_text) > 500 else abstract_text
+                            item_text += f"- Abstract: {abstract_text}\n"
+                        
+                        # Additional metadata
+                        item_text += f"- DOI: {metadata.get('doi', 'N/A')}\n"
+                        mesh_terms = [str(m.get('descriptor', m)) for m in metadata.get('mesh_headings', [])[:5]]
+                        item_text += f"- MeSH Terms: {', '.join(mesh_terms)}\n"
+                        item_text += f"- Keywords: {', '.join(metadata.get('keywords', [])[:5])}\n"
+                        item_text += f"- Study Type: {metadata.get('study_type', 'N/A')}\n"
+                        item_text += f"- Phase: {metadata.get('phase', 'N/A')}\n"
+                        
+                    elif item_type == 'CTG':
+                        # Clinical Trial specific data
+                        item_text += f"- NCT ID: {metadata.get('id', 'N/A')}\n"
+                        item_text += f"- Status: {metadata.get('status', 'N/A')}\n"
+                        item_text += f"- Phase: {metadata.get('phase', 'N/A')}\n"
+                        item_text += f"- Study Type: {metadata.get('studyType', 'N/A')}\n"
+                        item_text += f"- Conditions: {', '.join(metadata.get('conditions', [])[:5])}\n"
+                        item_text += f"- Interventions: {', '.join(metadata.get('intervention_names', [])[:5])}\n"
+                        item_text += f"- Start Date: {metadata.get('date', 'N/A')}\n"
+                        item_text += f"- Enrollment: {metadata.get('enrollment', 'N/A')}\n"
+                        item_text += f"- Sponsor: {metadata.get('sponsor', 'N/A')}\n"
+                        
+                        # Brief summary
+                        brief_summary = metadata.get('briefSummary', '')
+                        if brief_summary:
+                            brief_summary = brief_summary[:500] + '...' if len(brief_summary) > 500 else brief_summary
+                            item_text += f"- Brief Summary: {brief_summary}\n"
+                        
+                    elif item_type == 'MERGED':
+                        # Merged item data
+                        item_text += f"- PMID: {metadata.get('pmid', 'N/A')}\n"
+                        item_text += f"- NCT ID: {metadata.get('nctid', 'N/A')}\n"
+                        item_text += f"- Journal: {metadata.get('journal', 'N/A')}\n"
+                        item_text += f"- Publication Date: {metadata.get('pubDate', 'N/A')}\n"
+                        item_text += f"- Trial Status: {metadata.get('status', 'N/A')}\n"
+                        item_text += f"- Phase: {metadata.get('phase', 'N/A')}\n"
+                        item_text += f"- Conditions: {', '.join(metadata.get('conditions', [])[:5])}\n"
+                        item_text += f"- Interventions: {', '.join(metadata.get('intervention_names', [])[:5])}\n"
+                        
+                        # Include both PM and CTG abstracts/summaries if available
+                        pm_abstract = metadata.get('abstract', '')
+                        if isinstance(pm_abstract, dict):
+                            pm_abstract = ' '.join(str(v) for v in pm_abstract.values() if v)
+                        if pm_abstract:
+                            pm_abstract = pm_abstract[:400] + '...' if len(pm_abstract) > 400 else pm_abstract
+                            item_text += f"- Paper Abstract: {pm_abstract}\n"
+                        
+                        trial_summary = metadata.get('briefSummary', '')
+                        if trial_summary:
+                            trial_summary = trial_summary[:400] + '...' if len(trial_summary) > 400 else trial_summary
+                            item_text += f"- Trial Summary: {trial_summary}\n"
+                    
+                    item_text += "\n"
+                    formatted_items.append(item_text)
+                
+                except Exception as e:
+                    logger.warning(f"Error formatting item {i}: {str(e)}")
+                    # Add basic fallback formatting
+                    formatted_items.append(f"Item {i}: {metadata.get('title', 'Unknown title')}\n\n")
+            
+            return '\n'.join(formatted_items)
+        
+        except Exception as e:
+            logger.error(f"Error formatting detailed results: {str(e)}")
+            return "Error: Unable to format detailed results data."
+
     def _parse_insights_response(self, response: str) -> Dict[str, Any]:
         """
         Parse and validate the AI insights response

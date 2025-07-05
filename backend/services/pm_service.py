@@ -17,7 +17,6 @@ print(f"[PM Service] NCBI API Key: {'***' if NCBI_API_KEY else 'Not set'}")
 print(f"[PM Service] NCBI Tool Name: {NCBI_TOOL_NAME}")
 print(f"[PM Service] NCBI API Email: {NCBI_API_EMAIL}")
 print(f"[PM Service] Max Fetch Size: {MAX_FETCH_SIZE}")
-print(f"[PM Service] PMC Fallback: Enabled (will try PMC if PubMed fails)")
 
 # Rate limiting configuration
 MAX_REQUESTS_PER_SECOND = 10 if NCBI_API_KEY else 3
@@ -112,29 +111,20 @@ async def search_pm(combined_query, condition_query=None, journal=None, sex=None
         
         print(f"Searching PubMed with query: {term}")
         
-        # Try PubMed first
-        all_pmids = await fetch_all_pmids_paginated(term, sort=sort, sort_order=sort_order, max_limit=MAX_PMIDS_LIMIT, db="pubmed")
+        # Fetch PMIDs using the new paginated approach with limit
+        all_pmids = await fetch_all_pmids_paginated(term, sort=sort, sort_order=sort_order, max_limit=MAX_PMIDS_LIMIT)
         total = len(all_pmids)
-        db_used = "pubmed"
         
-        print(f"# total PMIDs found in PubMed: {total}")
+        print(f"# total PMIDs found: {total}")
         
-        # If PubMed fails or returns no results, try PMC as fallback
         if not all_pmids:
-            print("No results found in PubMed, trying PMC as fallback...")
-            all_pmids = await fetch_all_pmids_paginated(term, sort=sort, sort_order=sort_order, max_limit=MAX_PMIDS_LIMIT, db="pmc")
-            total = len(all_pmids)
-            db_used = "pmc"
-            print(f"# total PMC IDs found: {total}")
-            
-            if not all_pmids:
-                print("No results found in both PubMed and PMC.")
-                return {"results": [], "total": 0, "page": page, "page_size": page_size, "applied_query": term}
+            print("No results found in PubMed.")
+            return {"results": [], "total": 0, "page": page, "page_size": page_size, "applied_query": term}
 
-        print(f"About to fetch detailed data for {len(all_pmids)} IDs from {db_used.upper()}")
+        print(f"About to fetch detailed data for {len(all_pmids)} PMIDs")
         
-        # Fetch complete data using the unified XML approach with the correct database
-        results = await fetch_pubmed_data(all_pmids, db=db_used)
+        # Fetch complete data using the unified XML approach
+        results = await fetch_pubmed_data(all_pmids)
         
         print(f"Successfully fetched detailed data for {len(results)} PMIDs")
 
@@ -172,18 +162,17 @@ async def search_pm(combined_query, condition_query=None, journal=None, sex=None
         print(f"Full traceback: {traceback.format_exc()}")
         return {"results": [], "total": 0, "page": page, "page_size": page_size, "applied_query": term if 'term' in locals() else combined_query}
 
-async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=None, max_limit: int = MAX_PMIDS_LIMIT, db: str = "pubmed") -> List[str]:
+async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=None, max_limit: int = MAX_PMIDS_LIMIT) -> List[str]:
     """
-    Fetch PMIDs/PMCIDs for a query using paginated E-Search requests with a maximum limit.
+    Fetch PMIDs for a query using paginated E-Search requests with a maximum limit.
     Uses proper rate limiting to stay within NCBI limits.
-    Supports both pubmed and pmc databases.
     """
     all_pmids = []
     
     # First, get the total count with rate limiting
     await rate_limiter.acquire()
     initial_params = {
-        "db": db,
+        "db": "pubmed",
         "term": query,
         "retmode": "json",
         "retmax": 0,  # Just get count
@@ -198,21 +187,20 @@ async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=Non
         data = response.json()
         # Defensive: check for 'esearchresult' and 'count'
         if 'esearchresult' not in data or 'count' not in data['esearchresult']:
-            print(f"❌ Unexpected E-Search response structure for {db}: {json.dumps(data, indent=2)}")
+            print(f"❌ Unexpected E-Search response structure: {json.dumps(data, indent=2)}")
             return []
         total_count = int(data['esearchresult']['count'])
-        print(f"📄 Total {db.upper()} IDs found in NCBI: {total_count}")
-        print(f"data: {data}")
+        print(f"📄 Total PMIDs found in NCBI: {total_count}")
         
         if total_count == 0:
             return []
         
         # Apply our limit
         actual_limit = min(total_count, max_limit)
-        print(f"📄 Will fetch up to {actual_limit} {db.upper()} IDs (limit: {max_limit})")
+        print(f"📄 Will fetch up to {actual_limit} PMIDs (limit: {max_limit})")
             
     except Exception as e:
-        print(f"❌ Failed to retrieve total count from {db}: {e}")
+        print(f"❌ Failed to retrieve total count: {e}")
         return []
     
     # Now fetch PMIDs in chunks with sequential processing (no concurrency)
@@ -233,7 +221,7 @@ async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=Non
                 fetch_count = min(ESEARCH_MAX_IDS, remaining)
                 
                 params = {
-                    "db": db,
+                    "db": "pubmed",
                     "term": query,
                     "retmode": "json",
                     "retstart": start_pos,
@@ -252,14 +240,14 @@ async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=Non
                         data = await response.json()
                         pmids = data['esearchresult']['idlist']
                         all_pmids.extend(pmids)
-                        print(f"✅ Retrieved {len(pmids)} {db.upper()} IDs (start={start_pos}, total so far: {len(all_pmids)})")
+                        print(f"✅ Retrieved {len(pmids)} PMIDs (start={start_pos}, total so far: {len(all_pmids)})")
                         
                         if not pmids:  # No more results
                             break
                         
                         # Check if we've reached our limit
                         if len(all_pmids) >= max_limit:
-                            print(f"✅ Reached maximum limit of {max_limit} {db.upper()} IDs")
+                            print(f"✅ Reached maximum limit of {max_limit} PMIDs")
                             break
                             
                 except Exception as e:
@@ -273,24 +261,24 @@ async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=Non
     except ImportError:
         # Fallback to synchronous requests if aiohttp is not available
         print("aiohttp not available, falling back to synchronous E-Search")
-        all_pmids = _fetch_all_pmids_sync(query, sort, sort_order, actual_limit, max_limit, db)
+        all_pmids = _fetch_all_pmids_sync(query, sort, sort_order, actual_limit, max_limit)
     
     # Ensure we don't exceed the limit
     if len(all_pmids) > max_limit:
         all_pmids = all_pmids[:max_limit]
     
-    print(f"🎉 Done. Total collected {db.upper()} IDs: {len(all_pmids)} (limit: {max_limit})")
+    print(f"🎉 Done. Total collected PMIDs: {len(all_pmids)} (limit: {max_limit})")
     return all_pmids
 
-def _fetch_all_pmids_sync(query: str, sort: str, sort_order: Optional[str], total_count: int, max_limit: int, db: str = "pubmed") -> List[str]:
-    """Synchronous fallback for fetching PMIDs/PMCIDs with proper rate limiting and limit."""
+def _fetch_all_pmids_sync(query: str, sort: str, sort_order: Optional[str], total_count: int, max_limit: int) -> List[str]:
+    """Synchronous fallback for fetching PMIDs with proper rate limiting and limit."""
     all_pmids = []
     actual_limit = min(total_count, max_limit)
     
     for start_pos in range(0, actual_limit, ESEARCH_MAX_IDS):
         # Don't exceed our limit
         if len(all_pmids) >= max_limit:
-            print(f"✅ Reached maximum limit of {max_limit} {db.upper()} IDs")
+            print(f"✅ Reached maximum limit of {max_limit} PMIDs")
             break
         
         # Apply rate limiting
@@ -301,7 +289,7 @@ def _fetch_all_pmids_sync(query: str, sort: str, sort_order: Optional[str], tota
         fetch_count = min(ESEARCH_MAX_IDS, remaining)
         
         params = {
-            "db": db,
+            "db": "pubmed",
             "term": query,
             "retmode": "json",
             "retstart": start_pos,
@@ -325,15 +313,15 @@ def _fetch_all_pmids_sync(query: str, sort: str, sort_order: Optional[str], tota
                 break
                 
             all_pmids.extend(pmids)
-            print(f"✅ Retrieved {len(pmids)} {db.upper()} IDs (start={start_pos}, total so far: {len(all_pmids)})")
+            print(f"✅ Retrieved {len(pmids)} PMIDs (start={start_pos}, total so far: {len(all_pmids)})")
             
             # Check if we've reached our limit
             if len(all_pmids) >= max_limit:
-                print(f"✅ Reached maximum limit of {max_limit} {db.upper()} IDs")
+                print(f"✅ Reached maximum limit of {max_limit} PMIDs")
                 break
             
         except Exception as e:
-            print(f"⚠️ Error at retstart={start_pos} for {db}: {e}")
+            print(f"⚠️ Error at retstart={start_pos}: {e}")
             # For 429 errors or other API errors, wait longer before continuing
             if "429" in str(e) or "Invalid control character" in str(e):
                 print("API error detected, waiting 2 seconds...")
@@ -433,29 +421,25 @@ def rerank_pm_results_with_bm25(query: str, pm_results: list) -> list:
                   key=lambda x: x.get("bm25_score", 0.0),
                   reverse=True)
 
-def fetch_abstracts(pmids: List[str], db: str = "pubmed") -> Dict[str, Optional[dict]]:
+def fetch_abstracts(pmids: List[str]) -> Dict[str, Optional[dict]]:
     """
-    Fetch abstracts for given PMIDs/PMCIDs using the unified XML approach.
+    Fetch abstracts for given PMIDs using the unified XML approach.
     This is a simplified version that leverages our new fetch_pubmed_data function.
     
-    Args:
-        pmids: List of PMIDs or PMCIDs
-        db: Database to use ("pubmed" or "pmc")
-    
-    Returns: { "PMID/PMCID": abstract_dict | None }
+    Returns: { "PMID": abstract_dict | None }
     """
     if not pmids:
         return {}
 
     # Use the synchronous version for simplicity since this is called from sync context
-    results = _fetch_pubmed_data_sync(pmids, db)
+    results = _fetch_pubmed_data_sync(pmids)
     
     # Extract just the abstracts
     abstracts = {}
     for result in results:
-        id_key = result.get("pmid") if db == "pubmed" else result.get("pmcid")
-        if id_key:
-            abstracts[id_key] = result.get("abstract")
+        pmid = result.get("pmid")
+        if pmid:
+            abstracts[pmid] = result.get("abstract")
     
     # Ensure all requested PMIDs have an entry
     for pmid in pmids:
@@ -497,21 +481,17 @@ def _fetch_with_requests(url: str, params: Dict) -> str:
         print(f"Error fetching {url}: {str(e)}")
         return ""
 
-async def fetch_pubmed_data(pmids: List[str], db: str = "pubmed") -> List[Dict]:
+async def fetch_pubmed_data(pmids: List[str]) -> List[Dict]:
     """
-    Fetch complete PubMed/PMC data for given PMIDs/PMCIDs using XML EFETCH API.
+    Fetch complete PubMed data for given PMIDs using XML EFETCH API.
     Uses sequential processing with proper rate limiting instead of concurrent requests.
     
-    Args:
-        pmids: List of PMIDs or PMCIDs
-        db: Database to use ("pubmed" or "pmc")
-    
-    Returns: List of complete PubMed/PMC records with all metadata, abstracts, and NCT IDs.
+    Returns: List of complete PubMed records with all metadata, abstracts, and NCT IDs.
     """
     if not pmids:
         return []
 
-    print(f"Starting fetch_pubmed_data for {len(pmids)} {db.upper()} IDs")
+    print(f"Starting fetch_pubmed_data for {len(pmids)} PMIDs")
     results = []
     
     try:
@@ -523,9 +503,9 @@ async def fetch_pubmed_data(pmids: List[str], db: str = "pubmed") -> List[Dict]:
                 chunk_ids = pmids[i:i + EFETCH_MAX_IDS]
                 chunk_idx = i // EFETCH_MAX_IDS + 1
                 
-                print(f"Fetching XML data for chunk {chunk_idx}/{total_chunks}: {len(chunk_ids)} {db.upper()} IDs")
+                print(f"Fetching XML data for chunk {chunk_idx}/{total_chunks}: {len(chunk_ids)} PMIDs")
                 params = {
-                    "db": db,
+                    "db": "pubmed",
                     "id": ",".join(chunk_ids),
                     "retmode": "xml",
                     "tool": NCBI_TOOL_NAME,
@@ -539,12 +519,7 @@ async def fetch_pubmed_data(pmids: List[str], db: str = "pubmed") -> List[Dict]:
                 
                 # Parse XML and convert to our standard format
                 try:
-                    if db == "pmc":
-                        # PMC returns different XML structure, we'll handle basic fields
-                        parsed_data = parse_pmc_xml(xml_content)
-                    else:
-                        # PubMed XML parsing
-                        parsed_data = parse_pubmed_xml(xml_content)
+                    parsed_data = parse_pubmed_xml(xml_content)
                     print(f"Parsed {len(parsed_data)} records from chunk {chunk_idx}")
                 except Exception as e:
                     print(f"Error parsing XML for chunk {chunk_idx}: {e}")
@@ -552,16 +527,16 @@ async def fetch_pubmed_data(pmids: List[str], db: str = "pubmed") -> List[Dict]:
                 
                 chunk_results = []
                 
-                for id_val in chunk_ids:
-                    if id_val in parsed_data:
-                        data = parsed_data[id_val]
+                for pmid in chunk_ids:
+                    if pmid in parsed_data:
+                        data = parsed_data[pmid]
                         # Convert to the format expected by the rest of the system
                         result = {
-                            "source": "PMC" if db == "pmc" else "PM",
-                            "type": "PMC" if db == "pmc" else "PM",
-                            "id": id_val,
-                            "pmid": data.get("pmid") if db == "pubmed" else None,
-                            "pmcid": data.get("pmcid") if db == "pmc" else data.get("pmcid"),
+                            "source": "PM",
+                            "type": "PM",  # Add type field for filtering
+                            "id": pmid,
+                            "pmid": pmid,
+                            "pmcid": data.get("pmcid"),
                             "title": data.get("title", ""),
                             "journal": data.get("journal", ""),
                             "authors": [author.get("name", "") for author in data.get("authors", [])],
@@ -590,15 +565,9 @@ async def fetch_pubmed_data(pmids: List[str], db: str = "pubmed") -> List[Dict]:
                             "volume": data.get("volume"),
                             "issue": data.get("issue")
                         }
-                        # Set the appropriate ID field based on database
-                        if db == "pmc":
-                            result["pmcid"] = id_val
-                        else:
-                            result["pmid"] = id_val
-                        
                         chunk_results.append(result)
                     else:
-                        print(f"Warning: {db.upper()} ID {id_val} not found in parsed XML for chunk {chunk_idx}")
+                        print(f"Warning: PMID {pmid} not found in parsed XML for chunk {chunk_idx}")
                 
                 results.extend(chunk_results)
                 print(f"Chunk {chunk_idx} completed: {len(chunk_results)} results (total so far: {len(results)})")
@@ -606,14 +575,14 @@ async def fetch_pubmed_data(pmids: List[str], db: str = "pubmed") -> List[Dict]:
     except ImportError:
         # Fallback to synchronous requests
         print("aiohttp not available, falling back to synchronous requests")
-        results = _fetch_pubmed_data_sync(pmids, db)
+        results = _fetch_pubmed_data_sync(pmids)
 
     print(f"fetch_pubmed_data completed: {len(results)} results")
     return results
 
-def _fetch_pubmed_data_sync(pmids: List[str], db: str = "pubmed") -> List[Dict]:
-    """Synchronous fallback for fetching PubMed/PMC data with proper rate limiting."""
-    print(f"Starting sync fetch for {len(pmids)} {db.upper()} IDs")
+def _fetch_pubmed_data_sync(pmids: List[str]) -> List[Dict]:
+    """Synchronous fallback for fetching PubMed data with proper rate limiting."""
+    print(f"Starting sync fetch for {len(pmids)} PMIDs")
     results = []
     
     total_chunks = (len(pmids) + EFETCH_MAX_IDS - 1) // EFETCH_MAX_IDS
@@ -621,10 +590,10 @@ def _fetch_pubmed_data_sync(pmids: List[str], db: str = "pubmed") -> List[Dict]:
     for i in range(0, len(pmids), EFETCH_MAX_IDS):
         chunk_ids = pmids[i:i + EFETCH_MAX_IDS]
         chunk_num = i // EFETCH_MAX_IDS + 1
-        print(f"Fetching XML data for chunk {chunk_num}/{total_chunks} with {len(chunk_ids)} {db.upper()} IDs")
+        print(f"Fetching XML data for chunk {chunk_num}/{total_chunks} with {len(chunk_ids)} PMIDs")
         
         params = {
-            "db": db,
+            "db": "pubmed",
             "id": ",".join(chunk_ids),
             "retmode": "xml",
             "tool": NCBI_TOOL_NAME,
@@ -638,22 +607,19 @@ def _fetch_pubmed_data_sync(pmids: List[str], db: str = "pubmed") -> List[Dict]:
         
         try:
             # Parse XML and convert to our standard format
-            if db == "pmc":
-                parsed_data = parse_pmc_xml(xml_content)
-            else:
-                parsed_data = parse_pubmed_xml(xml_content)
+            parsed_data = parse_pubmed_xml(xml_content)
             print(f"Parsed {len(parsed_data)} records from chunk {chunk_num}")
             
             chunk_results = 0
-            for id_val in chunk_ids:
-                if id_val in parsed_data:
-                    data = parsed_data[id_val]
+            for pmid in chunk_ids:
+                if pmid in parsed_data:
+                    data = parsed_data[pmid]
                     # Convert to the format expected by the rest of the system
                     result = {
-                        "source": "PMC" if db == "pmc" else "PM",
-                        "type": "PMC" if db == "pmc" else "PM",
-                        "id": id_val,
-                        "pmid": data.get("pmid") if db == "pubmed" else data.get("pmid"),
+                        "source": "PM",
+                        "type": "PM",  # Add type field for filtering
+                        "id": pmid,
+                        "pmid": pmid,
                         "pmcid": data.get("pmcid"),
                         "title": data.get("title", ""),
                         "journal": data.get("journal", ""),
@@ -683,16 +649,10 @@ def _fetch_pubmed_data_sync(pmids: List[str], db: str = "pubmed") -> List[Dict]:
                         "volume": data.get("volume"),
                         "issue": data.get("issue")
                     }
-                    # Set the appropriate ID field based on database
-                    if db == "pmc":
-                        result["pmcid"] = id_val
-                    else:
-                        result["pmid"] = id_val
-                        
                     results.append(result)
                     chunk_results += 1
                 else:
-                    print(f"Warning: {db.upper()} ID {id_val} not found in parsed XML for chunk {chunk_num}")
+                    print(f"Warning: PMID {pmid} not found in parsed XML for chunk {chunk_num}")
             
             print(f"Chunk {chunk_num} completed: {chunk_results} results (total so far: {len(results)})")
                     
@@ -702,135 +662,6 @@ def _fetch_pubmed_data_sync(pmids: List[str], db: str = "pubmed") -> List[Dict]:
     
     print(f"Sync processing completed: {len(results)} total results")
     return results
-
-def parse_pmc_xml(xml_content: str) -> Dict[str, Dict]:
-    """
-    Parse PMC XML response and extract basic information.
-    PMC XML structure is different from PubMed XML.
-    """
-    from xml.etree import ElementTree as ET
-    
-    try:
-        root = ET.fromstring(xml_content)
-        parsed_data = {}
-        
-        # PMC articles are in <article> elements
-        for article in root.findall('.//article'):
-            pmcid = None
-            pmid = None
-            
-            # Extract PMC ID from article-id elements
-            for article_id in article.findall('.//article-id'):
-                pub_id_type = article_id.get('pub-id-type', '')
-                if pub_id_type == 'pmc':
-                    pmcid = article_id.text
-                elif pub_id_type == 'pmid':
-                    pmid = article_id.text
-            
-            if not pmcid:
-                continue
-                
-            # Extract basic metadata
-            title_elem = article.find('.//article-title')
-            title = title_elem.text if title_elem is not None else ""
-            
-            # Extract journal info
-            journal_elem = article.find('.//journal-title')
-            journal = journal_elem.text if journal_elem is not None else ""
-            
-            # Extract authors
-            authors = []
-            for contrib in article.findall('.//contrib[@contrib-type="author"]'):
-                name_elem = contrib.find('.//name')
-                if name_elem is not None:
-                    surname = name_elem.find('surname')
-                    given_names = name_elem.find('given-names')
-                    if surname is not None and given_names is not None:
-                        authors.append({
-                            "name": f"{given_names.text} {surname.text}",
-                            "lastname": surname.text,
-                            "forename": given_names.text
-                        })
-            
-            # Extract abstract
-            abstract_elem = article.find('.//abstract')
-            abstract = ""
-            if abstract_elem is not None:
-                # PMC abstracts can have structured content
-                abstract_parts = []
-                for p in abstract_elem.findall('.//p'):
-                    if p.text:
-                        abstract_parts.append(p.text)
-                abstract = " ".join(abstract_parts) if abstract_parts else abstract_elem.text or ""
-            
-            # Extract publication date
-            pub_date = ""
-            pub_year = None
-            for pub_date_elem in article.findall('.//pub-date'):
-                year_elem = pub_date_elem.find('year')
-                month_elem = pub_date_elem.find('month')
-                day_elem = pub_date_elem.find('day')
-                
-                if year_elem is not None:
-                    pub_year = year_elem.text
-                    date_parts = [year_elem.text]
-                    if month_elem is not None:
-                        date_parts.append(month_elem.text.zfill(2))
-                    if day_elem is not None:
-                        date_parts.append(day_elem.text.zfill(2))
-                    pub_date = "/".join(date_parts)
-                    break
-            
-            # Extract DOI
-            doi = None
-            for article_id in article.findall('.//article-id'):
-                if article_id.get('pub-id-type') == 'doi':
-                    doi = article_id.text
-                    break
-            
-            # Look for NCT IDs in the text content
-            ref_nctids = []
-            full_text = ET.tostring(article, encoding='unicode', method='text')
-            nct_pattern = r'NCT\d{8}'
-            import re
-            ref_nctids = list(set(re.findall(nct_pattern, full_text, re.IGNORECASE)))
-            
-            parsed_data[pmcid] = {
-                "pmcid": pmcid,
-                "pmid": pmid,
-                "title": title,
-                "journal": journal,
-                "authors": authors,
-                "pub_date": pub_date,
-                "pub_year": pub_year,
-                "doi": doi,
-                "abstract": abstract,
-                "ref_nctids": ref_nctids,
-                # Default values for fields that PMC might not have
-                "journal_abbrev": "",
-                "journal_issn": None,
-                "article_date": pub_date,
-                "pii": None,
-                "language": ["eng"],  # Default to English
-                "publication_types": [],
-                "mesh_headings": [],
-                "keywords": [],
-                "chemicals": [],
-                "grants": [],
-                "country": None,
-                "nlm_unique_id": None,
-                "citation_subset": [],
-                "coi_statement": None,
-                "pagination": None,
-                "volume": None,
-                "issue": None
-            }
-        
-        return parsed_data
-        
-    except Exception as e:
-        print(f"Error parsing PMC XML: {e}")
-        return {}
 
 # Export the functions that are used by other modules
 from .pm_metadata_extractor import (
@@ -844,14 +675,14 @@ from .pm_metadata_extractor import (
 class PMService:
     """PM Service class wrapper for function-based PM operations"""
     
-    def get_paper_details(self, pmid: str, db: str = "pubmed") -> Optional[Dict[str, Any]]:
-        """Get detailed paper information for a specific PMID/PMCID using efetch XML"""
+    def get_paper_details(self, pmid: str) -> Optional[Dict[str, Any]]:
+        """Get detailed paper information for a specific PMID using efetch XML"""
         try:
-            # Use the existing function which now supports both databases
-            results = _fetch_pubmed_data_sync([pmid], db)
+            # Use the existing fetch_abstracts function which calls our XML parsing
+            results = _fetch_pubmed_data_sync([pmid])
             if results:
                 return results[0]
             return None
         except Exception as e:
-            print(f"Error fetching {db.upper()} details for {pmid}: {str(e)}")
+            print(f"Error fetching PM details for {pmid}: {str(e)}")
             return None
