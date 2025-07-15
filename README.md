@@ -5,12 +5,25 @@ A comprehensive platform that integrates PubMed articles and ClinicalTrials.gov 
 ## Prerequisites
 
 - **NCBI API Key**: Register at https://www.ncbi.nlm.nih.gov/account/
+
+  - Sign in to your NCBI account or create a new one
+  - Once logged in, access your acount settings by clicking on your username in the top-right corner
+  - Scroll down to the section titled “API Key Management”
+  - Click “Create an API Key.” This will generate a unique alphanumeric key
+
 - **Azure OpenAI**: Get credentials from your Azure portal
+- **LiteLLM**: Configure your LiteLLM API credentials for GPT-4o access
 - **Firebase(Optional)**: Set up a Firebase project at https://console.firebase.google.com/
-- **AACT Database**: Download from https://aact.ctti-clinicaltrials.org/downloads and import to PostgreSQL:
+- **AACT Database**: Download from https://aact.ctti-clinicaltrials.org/downloads and unzip. To import to PostgreSQL:
+
   ```bash
   createdb trials
-  psql trials < clinical_trials_dump.sql
+
+  pg_restore -e -v -O -x -d trials --no-owner path/to/postgres.dmp
+  
+  psql -d trials  # connects to your local trials database using your PostgreSQL client
+  
+  SELECT count(*) FROM ctgov.studies; # to verify your database is working
   ```
 
 ---
