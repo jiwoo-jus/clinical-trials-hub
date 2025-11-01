@@ -2,10 +2,6 @@ from typing import Dict, List, Any, Optional, Set, Tuple
 from collections import defaultdict
 from datetime import datetime
 import logging
-import json
-from config import DB_USER, DB_PASS, DB_HOST
-from services.extraction.extraction_pipeline import get_extraction_pipeline
-
 
 logger = logging.getLogger(__name__)
 
@@ -341,140 +337,8 @@ def calculate_filter_stats(pm_results: List[Dict], ctg_results: List[Dict]) -> D
         }
     }
     
-    import psycopg2
-    conn = psycopg2.connect(f"dbname=pm_results user={DB_USER} password={DB_PASS} host={DB_HOST}")
-    cur = conn.cursor()
-    
-    print("connected to db")
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS pm_results (
-            pmcid TEXT PRIMARY KEY,
-            phase TEXT[],
-            study_type TEXT,
-            year TEXT,
-            design_allocation TEXT,
-            observational_model TEXT,
-            data JSONB,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
-    conn.commit()
-
-    pmcids = [r["pmcid"] for r in pm_results if "pmcid" in r]
-    cur.execute(
-        "SELECT pmcid FROM pm_results WHERE pmcid = ANY(%s);",
-        (pmcids,)
-    )
-    existing_rows = cur.fetchall()
-    existing_pmids = {row[0] for row in existing_rows}
-
-    missing_pmids = [pmcid for pmcid in pmcids if pmcid not in existing_pmids]
-    print(f"Found {len(existing_pmids)} in db, {len(missing_pmids)} new.") 
-
-    cur.execute(
-        "SELECT pmcid, data FROM pm_results WHERE pmcid = ANY(%s);",
-        (list(existing_pmids),)
-    )
-    existing_data = {row[0]: row[1] for row in cur.fetchall()}
-
-    new_data = {}
-    print(f"Starting extraction for {len(missing_pmids)} publications")
-    extraction_pipeline = get_extraction_pipeline()
-    new_data = extraction_pipeline.get_filtering_fields(missing_pmids)
-
-    # --- Step 6: Bulk insert new results into DB ---
-    def normalize_phase(value):
-        if value is None:
-            return ['NA']
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, list):
-            return [str(v) for v in value if v is not None]
-        return ['NA']
-
-    insert_values = []
-    for pmcid, parsed in new_data.items():
-        insert_values.append((
-            pmcid,
-            normalize_phase(parsed.get("phase")),
-            parsed.get("study_type"),
-            parsed.get("year"),
-            parsed.get("design_allocation"),
-            parsed.get("observational_model"),
-            json.dumps(parsed)  # full JSON
-        ))
-    psycopg2.extras.execute_values(
-        cur,
-        """
-        INSERT INTO pm_results
-            (pmcid, phase, study_type, year, design_allocation, observational_model, data)
-        VALUES %s
-        ON CONFLICT (pmcid) DO UPDATE
-            SET phase = EXCLUDED.phase,
-                study_type = EXCLUDED.study_type,
-                year = EXCLUDED.year,
-                design_allocation = EXCLUDED.design_allocation,
-                observational_model = EXCLUDED.observational_model,
-                data = EXCLUDED.data;
-        """,
-        insert_values
-    )
-    conn.commit()
-
-    cur.close()
-    conn.close()
-    all_data = {**existing_data, **new_data}
-
-    for pmcid, data in all_data.items():
-        classification = data  # or data["classification"] if nested inside
-        print(classification)
-        # --- Study Type ---
-        study_type = classification.get('study_type', 'UNKNOWN')
-        stats['pm']['study_type'][study_type] += 1
-
-        # --- INTERVENTIONAL ---
-        if study_type == 'INTERVENTIONAL':
-            phase = classification.get('phase', 'UNKNOWN')
-            for p in normalize_phase(phase):
-                stats['pm']['phase'][p] += 1
-
-            extraction_source = (
-                classification.get('_meta', {}).get('phase_source')
-                or 'not_found'
-            )
-            for p in phase:
-                  stats['pm']['extraction_sources'][p][extraction_source] += 1
-
-          
-            design_alloc = classification.get('design_allocation', 'UNKNOWN')
-            stats['pm']['design_allocation'][design_alloc] += 1
-
-        # --- OBSERVATIONAL ---
-        elif study_type == 'OBSERVATIONAL':
-            model = classification.get('observational_model', 'UNKNOWN')
-            stats['pm']['observational_model'][model] += 1
-
-        # --- Year ---
-        year = classification.get('year')
-        if year:
-            stats['pm']['year'][str(year)] += 1
-        else:
-            stats['pm']['year']['UNKNOWN'] += 1
-   
     # PubMed statistics aggregation - using integrated classification module
-    #for result in pm_results:
-
-        # if result["pmcid"] is in db pm_results:
-            # fetch all rows and save in python dict
-        # else:
-            # call filtering via llm from extraction pipeline
-            # receieve object response from extraction
-            # save object as cols in db with pmcid as key
-        
-        # reuse classification logic from below
-
-        '''
+    for result in pm_results:
         try:
             classification = ResultClassifier.classify_result(result)
             
@@ -508,7 +372,7 @@ def calculate_filter_stats(pm_results: List[Dict], ctg_results: List[Dict]) -> D
             logger.warning(f"Error processing PM result for stats: {e}")
             # Aggregate default values in case of errors
             stats['pm']['study_type']['NA'] += 1
-        '''
+    
     # CTG statistics aggregation - using integrated classification module
     for result in ctg_results:
         try:
