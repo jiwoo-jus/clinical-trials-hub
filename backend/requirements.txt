@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-dotenv
+requests
+openai
+beautifulsoup4
+lxml
+rank-bm25
+gunicorn
+aiohttp
+psycopg2-binary
+redis==5.0.1

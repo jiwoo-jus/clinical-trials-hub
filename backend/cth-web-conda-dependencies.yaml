@@ -1,0 +1,12 @@
+name: cth-web
+channels:
+  - defaults
+dependencies:
+  - conda-forge::nodejs
+  - conda-forge::python-dotenv
+  - conda-forge::requests
+  - conda-forge::fastapi
+  - conda-forge::uvicorn
+  - conda-forge::openai
+  - anaconda::beautifulsoup4
+prefix: /opt/anaconda3/envs/cth-web
