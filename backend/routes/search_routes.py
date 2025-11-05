@@ -210,7 +210,7 @@ async def search(request: Request, body: SearchRequest):
         
         logger.info(f"Determined sources to search: {sources_to_search} (pubmed_query: {bool(pubmed_query)}, ctg_query: {bool(ctg_query)}, has_general_query: {has_general_query})")
         
-        generate_dynamic_queries = False #not data.get("isRefined") 
+        generate_dynamic_queries = not data.get("isRefined") 
         dynamic_queries = {}
         if generate_dynamic_queries:
             logger.info("Starting query generation...")

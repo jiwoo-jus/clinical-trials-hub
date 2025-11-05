@@ -11,232 +11,80 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
   const [resultSelected, setResultSelected] = useState(false);
   const [queryResults, setQueryResults] = useState([]);
 
-  // Tree-based query structure for each term type
-  const [queryTrees, setQueryTrees] = useState({
-    Condition: [],
-    Intervention: [],
-    Other: [],
-  });
+  // Query builder state
+  const [currentTerm, setCurrentTerm] = useState("");
+  const [queryString, setQueryString] = useState("");
+  const [operator, setOperator] = useState("AND");
 
-  // Track available terms and adding state
-  const [addingTerm, setAddingTerm] = useState({
-    Condition: false,
-    Intervention: false,
-    Other: false,
-  });
+  // Collect all terms from dynamic queries
+  const allTerms = dynamicQueries?.queries?.flatMap(q => 
+    q.terms?.map(term => ({
+      value: term,
+      category: q.name
+    })) || []
+  ) || [];
 
-  const [newTermText, setNewTermText] = useState({
-    Condition: "",
-    Intervention: "",
-    Other: "",
-  });
+  // Add term to query string
+  const addToQuery = (term, op = operator, nest = false) => {
+    let newQuery = queryString.trim();
+    
+    // Format term with field if not "All Fields"
+    let formattedTerm = term;
 
-  const getTermType = (type) => {
-    if (type.includes("Condition")) return "Condition";
-    if (type.includes("Intervention")) return "Intervention";
-    return "Other";
-  };
 
-  // Build query string from tree structure
-  const buildQueryFromTree = useCallback((tree) => {
-    if (!tree || tree.length === 0) return "";
-
-    const buildNode = (node) => {
-      if (node.type === 'term') {
-        return node.value;
-      } else if (node.type === 'group') {
-        const childQueries = node.children.map(buildNode);
-        return `(${childQueries.join(` ${node.operator} `)})`;
+    if (newQuery === "") {
+      // First term - just add it
+      newQuery = formattedTerm;
+    } else if (nest) {
+      // Nesting: wrap the existing query with the new term
+      if (op === "NOT") {
+        newQuery = `(${newQuery}) NOT ${formattedTerm}`;
+      } else {
+        newQuery = `(${newQuery} ${op} ${formattedTerm})`;
       }
-      return "";
-    };
-
-    if (tree.length === 1) {
-      return buildNode(tree[0]);
-    }
-
-    // Join root level nodes with their operators
-    const parts = tree.map((node, index) => {
-      const nodeStr = buildNode(node);
-      if (index < tree.length - 1) {
-        return `${nodeStr} ${node.nextOperator || 'OR'}`;
-      }
-      return nodeStr;
-    });
-
-    return parts.join(' ');
-  }, []);
-
-  // Check if a term already exists in the tree
-  const termExistsInTree = (tree, termValue) => {
-    const checkNode = (node) => {
-      if (node.type === 'term') {
-        return node.value === termValue;
-      } else if (node.type === 'group') {
-        return node.children.some(checkNode);
-      }
-      return false;
-    };
-    return tree.some(checkNode);
-  };
-
-  // Add term to query tree
-  const addTermToTree = (termType, termValue, mode) => {
-    setQueryTrees((prev) => {
-      const currentTree = [...prev[termType]];
-
-      // Check for duplicates
-      if (termExistsInTree(currentTree, termValue)) {
-        return prev;
-      }
-
-      const newNode = { type: 'term', value: termValue };
-
-      // If tree is empty, just add the term
-      if (currentTree.length === 0) {
-        return { ...prev, [termType]: [newNode] };
-      }
-
-      // Handle different modes
-      if (mode === 'add-AND' || mode === 'add-OR') {
-        const operator = mode === 'add-AND' ? 'AND' : 'OR';
-        // Set the operator on the last node
-        currentTree[currentTree.length - 1].nextOperator = operator;
-        currentTree.push(newNode);
-        return { ...prev, [termType]: currentTree };
-      }
-
-      if (mode === 'nest-AND' || mode === 'nest-OR') {
-        if (currentTree.length < 2) {
-          // Fallback to add if not enough terms
-          currentTree[currentTree.length - 1].nextOperator = mode === 'nest-AND' ? 'AND' : 'OR';
-          currentTree.push(newNode);
-          return { ...prev, [termType]: currentTree };
-        }
-
-        const operator = mode === 'nest-AND' ? 'AND' : 'OR';
-        // Take the last node and create a group with it
-        const lastNode = currentTree.pop();
-        const groupNode = {
-          type: 'group',
-          operator: operator,
-          children: [lastNode, newNode]
-        };
-
-        // Preserve the operator that was on the last node
-        if (lastNode.nextOperator) {
-          groupNode.nextOperator = lastNode.nextOperator;
-          delete lastNode.nextOperator;
-        }
-
-        currentTree.push(groupNode);
-        return { ...prev, [termType]: currentTree };
-      }
-
-      return prev;
-    });
-  };
-
-  // Remove term from tree
-  const removeTermFromTree = (termType, termValue) => {
-    setQueryTrees((prev) => {
-      const removeFromNode = (nodes) => {
-        const result = [];
-        for (let i = 0; i < nodes.length; i++) {
-          const node = nodes[i];
-          
-          if (node.type === 'term') {
-            if (node.value !== termValue) {
-              result.push(node);
-            } else {
-              // If we're removing this term and it has a nextOperator, 
-              // we need to handle operator cleanup
-              if (i > 0 && node.nextOperator) {
-                // Remove the operator from previous node
-                delete result[result.length - 1].nextOperator;
-              }
-            }
-          } else if (node.type === 'group') {
-            const newChildren = removeFromNode(node.children);
-            if (newChildren.length > 1) {
-              result.push({ ...node, children: newChildren });
-            } else if (newChildren.length === 1) {
-              // Unwrap single-child groups
-              const unwrapped = newChildren[0];
-              if (node.nextOperator) {
-                unwrapped.nextOperator = node.nextOperator;
-              }
-              result.push(unwrapped);
-            }
-            // If newChildren.length === 0, don't add anything
-          }
-        }
-        return result;
-      };
-
-      return { ...prev, [termType]: removeFromNode(prev[termType]) };
-    });
-  };
-
-  // Check if term is in tree
-  const isTermInTree = (termType, termValue) => {
-    return termExistsInTree(queryTrees[termType], termValue);
-  };
-
-  // Handle custom term addition
-  const handleAddCustomTerm = (type) => {
-    const term = newTermText[type].trim();
-    if (!term) return;
-
-    // Add as a simple term with OR (default)
-    if (queryTrees[type].length > 0) {
-      addTermToTree(type, term, 'add-OR');
     } else {
-      setQueryTrees((prev) => ({
-        ...prev,
-        [type]: [{ type: 'term', value: term }]
-      }));
+      // Append: just add to the end with operator
+      if (op === "NOT") {
+        newQuery = `${newQuery} NOT ${formattedTerm}`;
+      } else {
+        newQuery = `${newQuery} ${op} ${formattedTerm}`;
+      }
     }
 
-    setNewTermText((prev) => ({ ...prev, [type]: "" }));
-    setAddingTerm((prev) => ({ ...prev, [type]: false }));
+    setQueryString(newQuery);
+    
+    
+    setCurrentTerm("");
   };
 
-  // Build combined query
-  const buildCombinedQuery = useCallback(() => {
-    const cond = buildQueryFromTree(queryTrees.Condition);
-    const intr = buildQueryFromTree(queryTrees.Intervention);
-    const other = buildQueryFromTree(queryTrees.Other);
-    
-    const queryParts = [];
-    if (cond) queryParts.push(`(${cond})`);
-    if (intr) queryParts.push(`(${intr})`);
-    if (other) queryParts.push(`(${other})`);
-    
-    return queryParts.join(" AND ");
-  }, [queryTrees, buildQueryFromTree]);
+  // Handle term click from list
+  const handleTermClick = (term) => {
+    setCurrentTerm(term);
+  };
 
-  const [searchTerm, setSearchTerm] = useState("");
+  // Handle manual query string edit
+  const handleQueryEdit = (e) => {
+    setQueryString(e.target.value);
+  };
 
-  useEffect(() => {
-    setSearchTerm(buildCombinedQuery());
-  }, [buildCombinedQuery]);
+  // Clear query
+  const clearQuery = () => {
+    setQueryString("");
+    setCurrentTerm("");
+  };
 
   // Handle advanced search
   const handleAdvancedSearch = async () => {
+    if (!queryString.trim()) return;
+    
     setLoading(true);
     setResults({});
     
     const params = {
-      cond: buildQueryFromTree(queryTrees.Condition),
-      intr: buildQueryFromTree(queryTrees.Intervention),
-      other_term: buildQueryFromTree(queryTrees.Other),
+      query: queryString,
       isRefined: true,
       refinedQuery: {
-        cond: buildQueryFromTree(queryTrees.Condition),
-        intr: buildQueryFromTree(queryTrees.Intervention),
-        other_term: buildQueryFromTree(queryTrees.Other),
-        combined_query: searchTerm,
+        combined_query: queryString,
       },
     };
 
@@ -326,169 +174,155 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
         </button>
 
         {showMore && (
-          <>
-            <div className="text-sm mt-3 flex items-center w-full">
-              <div className="w-full border rounded-md bg-gray-50 px-3 py-2">
-                <span
-                  className={`${
-                    searchTerm ? "font-mono text-gray-800 text-sm" : "text-gray-600"
-                  }`}
-                >
-                  {searchTerm || "Select terms to build query"}
-                </span>
+          <div className="mt-4 space-y-4">
+            <div className="flex flex-row rounded-lg border">
+            {/* Builder Interface */}
+            <div className="w-1/2 rounded-lg p-4">
+             
+
+              {/* Current Term Input Row */}
+              <div className="space-y-3">
+                <div className="flex items-start gap-2">
+                  <div className="flex-1">
+                    <label className="text-xs text-gray-600 mb-1 block">
+                      Search Term
+                    </label>
+                    <input
+                      type="text"
+                      value={currentTerm}
+                      onChange={(e) => setCurrentTerm(e.target.value)}
+                      className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Enter term or select from below..."
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && currentTerm.trim()) {
+                          addToQuery(currentTerm);
+                        }
+                      }}
+                    />
+                  </div>
+                  
+                </div>
+
+                {/* Operator Selection and Add Button */}
+                <div className="flex items-center gap-2">
+                  <select
+                    value={operator}
+                    onChange={(e) => setOperator(e.target.value)}
+                    className="border border-gray-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="AND">AND</option>
+                    <option value="OR">OR</option>
+                    <option value="NOT">NOT</option>
+                  </select>
+
+                  <button
+                    onClick={() => currentTerm.trim() && addToQuery(currentTerm, operator, false)}
+                    disabled={!currentTerm.trim()}
+                    className="px-2 py-1 rounded-full border  text-black text-sm font-semibold disabled:cursor-not-allowed flex items-center gap-1"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    onClick={() => currentTerm.trim() && addToQuery(currentTerm, "AND", true)}
+                    disabled={!currentTerm.trim() || !queryString.trim()}
+                    className="px-2 py-1  bg-blue-600 text-white text-sm font-semibold  disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"
+                  >
+                    Add with AND
+                  </button>
+
+                  <button
+                    onClick={() => currentTerm.trim() && addToQuery(currentTerm, "OR", true)}
+                    disabled={!currentTerm.trim() || !queryString.trim()}
+                    className="px-2 py-1  bg-blue-600 text-white text-sm font-semibold  disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"
+                  >
+                    Add with OR
+                  </button>
+
+                  <button
+                    onClick={() => currentTerm.trim() && addToQuery(currentTerm, "NOT", true)}
+                    disabled={!currentTerm.trim() || !queryString.trim()}
+                    className="px-2 py-1  bg-blue-600 text-white text-sm font-semibold  disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"
+                  >
+                    Add with NOT
+                  </button>
+                </div>
               </div>
+
+              <div className="mt-4">
+                <h4 className="text-xs font-semibold text-gray-600 mb-2">
+                  Terms
+                </h4>
+                <div className="flex flex-wrap gap-2">
+                  {allTerms.length > 0 ? (
+                    allTerms.map((item, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => handleTermClick(item.value)}
+                        className={`px-2 py-1 text-sm font-bold transition-colors ${
+                          currentTerm === item.value
+                            ? "bg-purple-700 text-white "
+                            :  "bg-purple-100 text-purple-800 hover:bg-purple-200"
+                        }`}
+                        title={item.category}
+                      >
+                        {item.value}
+                      </button>
+                    ))
+                  ) : (
+                    <p className="text-sm text-gray-500 italic">No suggestions available</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="w-1/2 rounded-lg p-4 ">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-semibold text-gray-700">
+                  Query Box
+                </label>
+                <button
+                  onClick={clearQuery}
+                  className="text-xs text-red-600 hover:text-red-700 font-semibold flex items-center gap-1"
+                >
+                  Clear
+                </button>
+              </div>
+              
+              <textarea
+                value={queryString}
+                onChange={handleQueryEdit}
+                className="w-full border border-gray-300 rounded-md px-3 py-2 font-mono text-sm text-gray-800 min-h-[100px] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Build your query here or type directly..."
+              />
+              
               <button
-                className="ml-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg py-2 px-4 whitespace-nowrap"
+                className="mt-1 text-sm  bg-green-600 hover:bg-blue-700 text-white font-bold rounded-full py-1 px-3 disabled:bg-gray-400 disabled:cursor-not-allowed"
                 onClick={handleAdvancedSearch}
-                disabled={!searchTerm}
+                disabled={!queryString.trim()}
               >
-                SEARCH
+                Search
               </button>
             </div>
 
-            <div className="mt-4">
-              {dynamicQueries?.queries?.map((q, index) => {
-                const type = getTermType(q.name);
-                const localQuery = buildQueryFromTree(queryTrees[type]);
+          </div>
 
-                return (
-                  <div key={index} className="text-sm mt-4 border border-gray-200 rounded-lg px-3 pb-3 pt-2 bg-gray-50">
-                    {/* Section Title */}
-                    <div className="flex justify-between items-center mb-1 ml-0.5">
-                      <span className="font-bold text-gray-800 text-base">{type} Terms</span>
-                      <button
-                        className="text-red-600 text-xs font-semibold rounded px-2 hover:underline"
-                        onClick={() => {
-                          setQueryTrees((prev) => ({ ...prev, [type]: [] }));
-                        }}
-                      >
-                        Clear All
-                      </button>
-                    </div>
-
-                    {/* Local Query Preview */}
-                    <div className="w-full border border-gray-300 bg-white rounded-md px-3 py-2 text-sm font-mono text-gray-800 mb-3  flex items-center">
-                      {localQuery || <span className="text-gray-500 font-sans">No terms selected</span>}
-                    </div>
-
-                    {/* Available Terms */}
-                    <div className="">
-                      <div className="flex flex-wrap gap-2">
-                        {q.terms.map((term, idx) => {
-                          const inTree = isTermInTree(type, term);
-                          const canNest = queryTrees[type].length >= 1;
-
-                          return (
-                            <div key={idx} className="flex items-center gap-1">
-                              <button
-                                className={`px-2 py-1 font-semibold text-xs transition-colors ${
-                                  inTree
-                                    ? "bg-purple-700 text-white"
-                                    : "bg-purple-100 text-purple-700 hover:bg-purple-200"
-                                }`}
-                                onClick={() => {
-                                  if (inTree) {
-                                    removeTermFromTree(type, term);
-                                  } else {
-                                    // Default add with OR if tree is not empty
-                                    if (queryTrees[type].length > 0) {
-                                      addTermToTree(type, term, 'add-OR');
-                                    } else {
-                                      setQueryTrees((prev) => ({
-                                        ...prev,
-                                        [type]: [{ type: 'term', value: term }]
-                                      }));
-                                    }
-                                  }
-                                }}
-                              >
-                                {term}
-                                
-                              </button>
-
-                              {!inTree && queryTrees[type].length > 0 && (
-                                <select
-                                  className="text-xs border border-gray-300 px-2 py-1 bg-white text-gray-700"
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    if (val === "NONE") return;
-                                    addTermToTree(type, term, val);
-                                    e.target.value = "NONE";
-                                  }}
-                                  defaultValue="NONE"
-                                >
-                                  <option value="NONE">Add with...</option>
-                                  <option value="add-AND">AND</option>
-                                  <option value="add-OR">OR</option>
-                                  {canNest && <option value="nest-AND">Nest with AND</option>}
-                                  {canNest && <option value="nest-OR">Nest with OR</option>}
-                                </select>
-                              )}
-                            </div>
-                          );
-                        })}
-
-                        {/* Add Custom Term */}
-                        {addingTerm[type] ? (
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              className="border border-gray-300 px-2 py-1 text-sm rounded-md"
-                              value={newTermText[type]}
-                              onChange={(e) =>
-                                setNewTermText((prev) => ({ ...prev, [type]: e.target.value }))
-                              }
-                              placeholder="Enter custom term"
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") handleAddCustomTerm(type);
-                                if (e.key === "Escape") setAddingTerm((prev) => ({ ...prev, [type]: false }));
-                              }}
-                              autoFocus
-                            />
-                            <button
-                              className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded-md text-xs font-semibold"
-                              onClick={() => handleAddCustomTerm(type)}
-                            >
-                              Add
-                            </button>
-                            <button
-                              className="text-gray-500 hover:text-gray-700 text-xs"
-                              onClick={() => setAddingTerm((prev) => ({ ...prev, [type]: false }))}
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            className="px-2 py-1 flex items-center justify-center rounded-full bg-white border-2 border-dashed border-gray-300 hover:border-gray-400 text-gray-600 hover:bg-gray-50"
-                            onClick={() => setAddingTerm((prev) => ({ ...prev, [type]: true }))}
-                            title="Add custom term"
-                          >
-                            <Plus className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                  </div>
-                );
-              })}
-            </div>
+      
 
             {/* Results Preview */}
-            <div className="mt-4 w-1/2 border rounded-lg px-4 py-3 bg-white">
-              <span className="text-sm font-bold text-gray-700">
+            <div className="border border-gray-200 rounded-lg p-4 bg-white">
+              <h4 className="text-sm font-bold text-gray-700 mb-2">
                 Results Preview
-              </span>
+              </h4>
               {loading && (
-                <div className="text-sm  text-gray-500 flex items-center">
+                <div className="text-sm text-gray-500 flex items-center">
                   <div className="rounded-full h-4 w-4 border-b-2 border-gray-900 mr-2"></div>
                   Loading...
                 </div>
               )}
               {results && results.total > 0 && (
-                <div className="mt-1">
-                  <div className="flex flex-wrap gap-4 text-sm">
+                <div>
+                  <div className="flex flex-wrap gap-4 text-sm mb-3">
                     {results.counts?.pm_only > 0 && (
                       <div>
                         <span className="font-bold text-blue-700">PubMed: </span>
@@ -516,7 +350,7 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                   </div>
 
                   <button
-                    className="mt-1 hover:underline text-blue-800 rounded-md text-sm font-semibold"
+                    className="text-blue-600 hover:underline  rounded-md text-sm font-semibold"
                     onClick={() => {
                       setResultSelected(true);
                       setSelected(null);
@@ -527,28 +361,28 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                   </button>
                 </div>
               )}
-              {!loading && (!results || results.total === 0) && searchTerm && (
-                <div className="text-sm mt-3 text-gray-500">
-                  Click SEARCH to see results
+              {!loading && (!results || results.total === 0) && queryString && (
+                <div className="text-sm text-gray-500">
+                  Click Search to see results
                 </div>
               )}
             </div>
-          </>
+          </div>
         )}
       </div>
 
       {/* Dynamic Queries Section */}
       {dynamicQueries?.queries?.length > 0 && (
         <div className="w-full space-y-2">
-         
+   
           {dynamicQueries.queries.map((item, index) => (
             <div
               key={index}
               className={`${
-                index === selected ? "ring-2 ring-gray-200" : ""
+                index === selected ? "ring-2 ring-blue-400" : ""
               } rounded-lg shadow-sm flex flex-col bg-white border border-gray-200 p-4 hover:shadow-md transition-shadow`}
             >
-              <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center justify-between mb-2">
                 <span className="bg-purple-100 rounded-full text-purple-700 text-sm font-bold px-3 py-1">
                   {item.name || ""}
                 </span>
@@ -574,7 +408,7 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                   <div className="my-2 flex flex-wrap gap-1">
                     {item.cond.split(' OR ').map((condPart, i, arr) => (
                       <div key={i} className="flex items-center">
-                        <span className={`text-xs px-2 py-1 font-semibold ${
+                        <span className={`text-xs px-2 py-1 font-semibold rounded ${
                           i === 0 ? 'bg-gray-100 text-gray-800' : 'bg-blue-100 text-blue-800'
                         }`}>
                           {condPart}
@@ -590,7 +424,7 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                   <div className="my-2 flex flex-wrap gap-1">
                     {item.intr.split(' OR ').map((intrPart, i, arr) => (
                       <div key={i} className="flex items-center">
-                        <span className={`text-xs px-2 py-1 font-semibold ${
+                        <span className={`text-xs px-2 py-1 font-semibold rounded ${
                           i === 0 ? 'bg-gray-100 text-gray-800' : 'bg-blue-100 text-blue-800'
                         }`}>
                           {intrPart}
