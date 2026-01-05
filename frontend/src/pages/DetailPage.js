@@ -53,26 +53,54 @@ const DetailPage = () => {
 
     // PMC or PM path
     if ((source === 'PM' || source === 'PMC') && currentPmcid) {
-      // Fetch structured info (original logic)
-      getStructuredInfo({
-        pmcid: currentPmcid,
-        pmid: metadata.pmid,
-        ref_nctids: JSON.stringify(metadata.ref_nctids || []),
-        page: metadata.page,
-        index: metadata.index
-      })
-        .then(res => {
-          if (isMounted) {
-            setStructuredInfo(res.structured_info);
-          }
+      // Check if publication_types contains excluded types (review, meta-analysis, case report, etc.)
+      console.log('[DetailPage] Checking publication_types:', metadata.publication_types);
+      
+      const hasExcludedType = metadata.publication_types?.some(type => {
+        const lowerType = type.toLowerCase();
+        const isExcluded = lowerType.includes('review') || 
+               lowerType.includes('meta-analysis') || 
+               lowerType.includes('case');
+        if (isExcluded) {
+          console.log('[DetailPage] Excluded type found:', type);
+        }
+        return isExcluded;
+      });
+
+      console.log('[DetailPage] hasExcludedType:', hasExcludedType);
+
+      if (hasExcludedType) {
+        // Skip API call and set a message indicating this is secondary literature
+        console.log('[DetailPage] Skipping API call for secondary literature');
+        if (isMounted) {
+          setStructuredInfo({
+            _message: 'Information extraction is not performed for secondary literature (reviews, meta-analyses, case reports).',
+            _excluded_type: true
+          });
+        }
+      } else {
+        // Fetch structured info (original logic)
+        console.log('[DetailPage] Calling getStructuredInfo API');
+        getStructuredInfo({
+          pmcid: currentPmcid,
+          pmid: metadata.pmid,
+          ref_nctids: JSON.stringify(metadata.ref_nctids || []),
+          page: metadata.page,
+          index: metadata.index
         })
-        .catch(() => {
-          if (isMounted) {
-            setStructuredInfo(null);
-          }
-          // Remove from loaded keys on error so it can be retried
-          loadedKeysRef.current.delete(requestKey);
-        });
+          .then(res => {
+            if (isMounted) {
+              setStructuredInfo(res.structured_info);
+            }
+          })
+          .catch(() => {
+            if (isMounted) {
+              setStructuredInfo(null);
+            }
+            // Remove from loaded keys on error so it can be retried
+            loadedKeysRef.current.delete(requestKey);
+          });
+      }
 
       // --- Fetch Full Text HTML (added logic) ---
       getPmcFullTextHtml({ pmcid: currentPmcid })

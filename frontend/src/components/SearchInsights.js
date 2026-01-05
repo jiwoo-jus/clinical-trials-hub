@@ -4,6 +4,8 @@ import { generateInsights, chatWithInsights } from '../api/insightsApi';
 import { MessageCircle, Send, Lightbulb, TrendingUp, Target, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 
 const SearchInsights = ({ searchKey, page, appliedFilters, results }) => {
+  // Cache insights per searchKey
+  const [insightsCache, setInsightsCache] = useState({});
   const [insights, setInsights] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -11,44 +13,69 @@ const SearchInsights = ({ searchKey, page, appliedFilters, results }) => {
   const [chatHistory, setChatHistory] = useState([]);
   const [chatMessage, setChatMessage] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(true);
-  const [hasStartedGeneration, setHasStartedGeneration] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false); // Default to collapsed
+  const [currentSearchKey, setCurrentSearchKey] = useState(null);
+  const [lastPage, setLastPage] = useState(null);
 
-  // Generate insights asynchronously when component mounts or key props change
+  // Generate insights asynchronously - only called for new searches
   const generateInsightsData = useCallback(async () => {
+    // Check cache first
+    if (insightsCache[searchKey]) {
+      console.log('[Insights] Using cached insights for:', searchKey);
+      setInsights(insightsCache[searchKey]);
+      return;
+    }
+
     setLoading(true);
     setError(null);
+    // Don't auto-expand, keep collapsed
+    
     try {
-      console.log('[Insights] Generating insights for:', { searchKey, page, appliedFilters });
-      const data = await generateInsights(searchKey, page, appliedFilters);
+      console.log('[Insights] Generating NEW insights for:', { searchKey, page: 1, appliedFilters });
+      // Always use page 1 for initial insights generation
+      const data = await generateInsights(searchKey, 1, appliedFilters);
       console.log('[Insights] Generated insights:', data);
-      setInsights(data.insights);
+      const newInsights = data.insights;
+      setInsights(newInsights);
+      
+      // Cache the insights
+      setInsightsCache(prev => ({
+        ...prev,
+        [searchKey]: newInsights
+      }));
     } catch (err) {
       console.error('[Insights] Error:', err);
       setError('Failed to generate insights. Please try again.');
     } finally {
       setLoading(false);
     }
-  }, [searchKey, page, appliedFilters]);
+  }, [searchKey, appliedFilters, insightsCache]);
 
-  // Start insights generation automatically but don't block UI
+  // When searchKey changes (new search), generate new insights
   useEffect(() => {
-    if (searchKey && results?.results?.length > 0 && !hasStartedGeneration) {
-      setHasStartedGeneration(true);
+    if (searchKey && searchKey !== currentSearchKey && results?.results?.length > 0) {
+      console.log('[Insights] New search detected, searchKey changed from', currentSearchKey, 'to', searchKey);
+      setCurrentSearchKey(searchKey);
+      setLastPage(page);
+      setError(null);
+      setChatHistory([]);
+      setIsExpanded(false); // Always keep collapsed
+      
       // Small delay to allow search results to render first
       setTimeout(() => {
         generateInsightsData();
       }, 100);
     }
-  }, [searchKey, results?.results?.length, hasStartedGeneration, generateInsightsData]);
+  }, [searchKey, currentSearchKey, results?.results?.length, page, generateInsightsData]);
 
-  // Reset generation flag when searchKey changes (new search)
+  // When page changes within same search, keep collapsed
   useEffect(() => {
-    setHasStartedGeneration(false);
-    setInsights(null);
-    setError(null);
-    setChatHistory([]);
-  }, [searchKey]);
+    if (searchKey === currentSearchKey && page !== lastPage && lastPage !== null) {
+      console.log('[Insights] Page changed from', lastPage, 'to', page, '- keeping collapsed');
+      setIsExpanded(false);
+      setLastPage(page);
+    }
+  }, [page, lastPage, searchKey, currentSearchKey]);
 
   const handleChatSubmit = async (e) => {
     e.preventDefault();
@@ -64,10 +91,11 @@ const SearchInsights = ({ searchKey, page, appliedFilters, results }) => {
     setChatHistory(updatedHistory);
 
     try {
+      // Always use page 1 for chat context (insights are generated from page 1)
       const response = await chatWithInsights(
         searchKey,
         userMessage,
-        page,
+        1, // Use page 1 since insights are based on page 1
         updatedHistory.slice(0, -1), // Don't include the just-added user message
         appliedFilters
       );

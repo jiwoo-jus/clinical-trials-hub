@@ -1,20 +1,19 @@
-# Use Node.js Alpine base image (lighter)
-FROM node:18-alpine
-
-# Set working directory
+# Build stage
+FROM node:20 AS build
 WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-
-# Install dependencies
-RUN npm install
-
-# Copy all files
+RUN npm ci
 COPY . .
+# If .env.production is present, it will be injected at this point
+RUN npm run build
 
-# Expose port
-EXPOSE 3000
+# Serve stage
+FROM node:20-slim
+WORKDIR /app
+RUN npm install -g serve
+COPY --from=build /app/build ./build
 
-# Start the application
-CMD ["npm", "start"]
+# Listen on the port that Cloud Run sets
+ENV PORT=8080
+EXPOSE 8080
+CMD ["sh", "-c", "serve -s build -l ${PORT:-8080}"]

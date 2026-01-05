@@ -4,7 +4,7 @@ import { StepBack, StepForward } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {ArrowLeft, ArrowRight } from 'lucide-react';
-import { filterSearchResults, getPatientQueries, getPatientNextPage, searchClinicalTrials } from '../api/searchApi'; //
+import { filterSearchResults, getPatientQueries, getPatientNextPage, getSearchNextPage, searchClinicalTrials } from '../api/searchApi'; //
 import DetailSidebar from '../components/DetailSidebar';
 import QueryList from '../components/QueryList';
 import { FilterPanel } from '../components/FilterPanel';
@@ -12,9 +12,11 @@ import { PatientFilterPanel } from '../components/PatientFilterPanel';
 import FilterSidebar from '../components/FilterSidebar';
 import Header from '../components/Header';
 import { SearchBar } from '../components/SearchBar';
+import EligibilityCriteria from '../components/EligibilityCriteria';
 //import SearchInsights from '../components/SearchInsights';
 import SearchResults from '../components/SearchResults';
 import { auth, db } from "../firebase";
+import { searchLogger, cacheLogger, filterLogger, detailLogger } from '../utils/logger';
 
 const SESSION_KEY = "searchState";
 const NEW_TAB_CACHE_KEY = "searchStateSharedForNewTab";
@@ -44,7 +46,7 @@ const saveSearch = async (searchEntry) => {
       createdAt: serverTimestamp()
     });
   } catch (error) {
-    console.error("Error saving search:", error);
+    searchLogger.error("Error saving search:", error);
   }
 };
 
@@ -52,11 +54,6 @@ const defaultFilters = () => ({
   cond: null,
   intr: null,
   other_term: null,
-  journal: null,
-  sex: null,
-  age: null,
-  studyType: null,
-  sponsor: null,
   location: null,
   status: null,
   pubmed_query: null,
@@ -68,11 +65,6 @@ const createFilters = (params = {}) => ({
   cond: params.cond || null,
   intr: params.intr || null,
   other_term: null,
-  journal: null,
-  sex: null,
-  age: null,
-  studyType: null,
-  sponsor: null,
   location: null,
   status: null,
   pubmed_query: null,
@@ -100,6 +92,22 @@ const SearchPage = () => {
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(false);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
   const [patientMode, setPatientMode] = useState(false)
+  
+  // PubMed filters state
+  const [pubmedFilters, setPubmedFilters] = useState({
+    source_type: ['PM', 'CTG'],
+    article_type: [],
+    species: [],
+    age: [],
+    publication_date: {
+      type: null,
+      from_year: '',
+      to_year: ''
+    },
+    pmc_open_access: true,
+    ctg_has_results: false,
+    ctg_status: []
+  });
   const [selectedQuery, setSelectedQuery] = useState(0);
   const [dynamicQueries, setDynamicQueries] = useState({});
   const navigate = useNavigate();
@@ -122,7 +130,6 @@ const SearchPage = () => {
   const [filters, setFilters] = useState(defaultFilters());
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [isRefined, setIsRefined] = useState(false);
   const [refinedQuery, setRefinedQuery] = useState(null);
   const [appliedQueries, setAppliedQueries] = useState(null);
   const [ctgTokenHistory, setCtgTokenHistory] = useState({});
@@ -133,10 +140,14 @@ const SearchPage = () => {
   const [selectedResult, setSelectedResult] = useState(null);
   const [mergedItemFocus, setMergedItemFocus] = useState({});
 
+  // Eligibility Criteria state - independent of search/filter/pagination
+  const [inclusionCriteria, setInclusionCriteria] = useState([]);
+  const [exclusionCriteria, setExclusionCriteria] = useState([]);
+
   // Remove URL query parameters on initial load
   useEffect(() => {
     if (window.location.search) {
-      console.log('[Initial] Removing URL query parameters on first mount.');
+      searchLogger.debug('[Initial] Removing URL query parameters on first mount.');
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
@@ -169,10 +180,10 @@ const SearchPage = () => {
     if (cacheString) {
       try {
         const parsed = JSON.parse(cacheString);
-        console.log('[Cache] Loaded cache:', parsed);
+        cacheLogger.debug('[Cache] Loaded cache:', parsed);
         return parsed;
       } catch (e) {
-        console.error('[Cache] Failed parsing cache:', e);
+        cacheLogger.error('[Cache] Failed parsing cache:', e);
         return null;
       }
     }
@@ -182,7 +193,7 @@ const SearchPage = () => {
   // Cache saving helper
   const saveCache = (cacheObj) => {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(cacheObj));
-    console.log('[Cache] Saved cache:', cacheObj);
+    cacheLogger.debug('[Cache] Saved cache:', cacheObj);
   };
 
   // Initial state restoration: location.state → session storage → URL query parameters
@@ -194,7 +205,7 @@ const SearchPage = () => {
       const shared = localStorage.getItem(NEW_TAB_CACHE_KEY);
       if (shared) {
         const parsedShared = JSON.parse(shared);
-        console.log('[Initial] Found shared new-tab cache in localStorage:', parsedShared);
+        cacheLogger.debug('[Initial] Found shared new-tab cache in localStorage:', parsedShared);
         if (parsedShared && parsedShared.dynamicQueries) {
           setDynamicQueries(parsedShared.dynamicQueries);
           restoredFromShared = true;
@@ -203,13 +214,20 @@ const SearchPage = () => {
         localStorage.removeItem(NEW_TAB_CACHE_KEY);
       }
     } catch (e) {
-      console.error('[Initial] Failed to read shared new-tab cache:', e);
+      cacheLogger.error('[Initial] Failed to read shared new-tab cache:', e);
     }
     if (location.state && location.state.searchState) {
-      console.log('[Initial] Restoring state from location.state:', location.state.searchState);
+      searchLogger.debug('[Initial] Restoring state from location.state:', location.state.searchState);
       cameFromDetailRef.current = true;
       const state = location.state.searchState;
       setFilters(state.filters);
+      
+      // Restore PubMed filters if available
+      if (state.pubmedFilters) {
+        setPubmedFilters(state.pubmedFilters);
+        searchLogger.debug('[Initial] Restored pubmedFilters from location.state:', state.pubmedFilters);
+      }
+      
       setPage(state.page);
       setPageSize(state.pageSize);
       setSearchHistory(state.searchHistory || []);
@@ -220,12 +238,22 @@ const SearchPage = () => {
       setQuery(state.query || '');
       // Restore searchKey from location.state
       if (state.searchKey) {
-        console.log('[Initial] Restoring searchKey from location.state:', state.searchKey);
+        searchLogger.debug('[Initial] Restoring searchKey from location.state:', state.searchKey);
         setSearchKey(state.searchKey);
+      }
+      // Restore baseResults if passed
+      if (state.baseResults) {
+        setBaseResults(state.baseResults);
+        searchLogger.debug('[Initial] Restored baseResults from location.state');
+      } else if (state.results) {
+        // Fallback to 'results' if baseResults was not explicitly included
+        setBaseResults(state.results);
+        searchLogger.debug('[Initial] Restored baseResults from location.state.results fallback');
       }
       
       saveCache({
         filters: state.filters,
+        pubmedFilters: state.pubmedFilters || pubmedFilters, // ADD: Save PubMed filters
         pageSize: state.pageSize,
         searchHistory: state.searchHistory || [],
         currentPage: state.page,
@@ -233,6 +261,7 @@ const SearchPage = () => {
         appliedQueries: state.appliedQueries || null,
         query: state.query || '',
         searchKey: state.searchKey, // Add searchKey to cache
+        baseResults: state.baseResults || state.results,
         pageCache: {
           [state.page]: {
             results: state.results,
@@ -249,7 +278,7 @@ const SearchPage = () => {
       const newParams = buildUrlParams({
         ...state.filters
       });
-      console.log('[Initial] Setting URL parameters from location.state:', newParams);
+      searchLogger.debug('[Initial] Setting URL parameters from location.state:', newParams);
       setSearchParams(newParams);
       navigate({ search: "?" + new URLSearchParams(newParams).toString() }, { replace: true });
       
@@ -260,8 +289,15 @@ const SearchPage = () => {
 
     const cachedState = loadCache();
       if (cachedState) {
-      console.log('[Initial] Restoring state from session cache.');
+      cacheLogger.debug('[Initial] Restoring state from session cache.');
       setFilters(cachedState.filters);
+      
+      // Restore PubMed filters if available
+      if (cachedState.pubmedFilters) {
+        setPubmedFilters(cachedState.pubmedFilters);
+        cacheLogger.debug('[Initial] Restored pubmedFilters from cache:', cachedState.pubmedFilters);
+      }
+      
       setPage(cachedState.currentPage);
       setPageSize(cachedState.pageSize);
       setSearchHistory(cachedState.searchHistory || []);
@@ -275,17 +311,25 @@ const SearchPage = () => {
         setDynamicQueries(cachedState.dynamicQueries);
       }
       setSelectedQuery(cachedState.selectedQuery);
+      // Restore baseResults from cache if present
+      if (cachedState.baseResults) {
+        setBaseResults(cachedState.baseResults);
+        cacheLogger.debug('[Initial] Restored baseResults from session cache');
+      } else if (cachedState.pageCache && cachedState.pageCache[cachedState.currentPage]) {
+        setBaseResults(cachedState.pageCache[cachedState.currentPage].results || {});
+        cacheLogger.debug('[Initial] Restored baseResults from pageCache fallback');
+      }
       
       // Restore filter application state
       if (cachedState.hasAppliedFilters) {
         setHasAppliedFilters(true);
         setActiveFilters(cachedState.activeFilters);
-        console.log('[Initial] Restored filter state - hasAppliedFilters:', true, 'activeFilters:', cachedState.activeFilters);
+        cacheLogger.debug('[Initial] Restored filter state - hasAppliedFilters:', true, 'activeFilters:', cachedState.activeFilters);
       }
       
       // Restore searchKey from cache
       if (cachedState.searchKey) {
-        console.log('[Initial] Restoring searchKey from cache:', cachedState.searchKey);
+        searchLogger.debug('[Initial] Restoring searchKey from cache:', cachedState.searchKey);
         setSearchKey(cachedState.searchKey);
       }
       if (cachedState.pageCache && cachedState.pageCache[cachedState.currentPage]) {
@@ -295,14 +339,9 @@ const SearchPage = () => {
         setCtgTokenHistory(pageData.ctgTokenHistory);
       }
       const newParams = buildUrlParams({
-        ...cachedState.filters,
-        isRefined: cachedState.pageCache &&
-                   cachedState.pageCache[cachedState.currentPage] &&
-                   cachedState.pageCache[cachedState.currentPage].refinedQuery
-          ? "true"
-          : "false"
+        ...cachedState.filters
       });
-      console.log('[Initial] Setting URL parameters from cache:', newParams);
+      searchLogger.debug('[Initial] Setting URL parameters from cache:', newParams);
       setSearchParams(newParams);
       navigate({ search: "?" + new URLSearchParams(newParams).toString() }, { replace: true });
       
@@ -311,27 +350,25 @@ const SearchPage = () => {
     }
 
     // First entry (no cache or location.state)
-    console.log('[Initial] First entry with URL params:', initialParams);
+    searchLogger.debug('[Initial] First entry with URL params:', initialParams);
     setFilters(createFilters(initialParams));
     setPage(Number(initialParams.page) || 1);
     setPageSize(Number(initialParams.pageSize) || 10);
-    setIsRefined(initialParams.isRefined === 'true');
     setRefinedQuery(initialParams.refinedQuery ? JSON.parse(initialParams.refinedQuery) : null);
 
     // Restore user_query from URL
     if (initialParams.user_query) {
       setQuery(initialParams.user_query);
-      console.log('[Initial] Restored user_query from URL:', initialParams.user_query);
+      searchLogger.debug('[Initial] Restored user_query from URL:', initialParams.user_query);
     }
 
     if (initialParams.cond || initialParams.intr || initialParams.other_term || initialParams.user_query) {
-      console.log('[Initial] Auto-triggering search on first entry.');
+      searchLogger.debug('[Initial] Auto-triggering search on first entry.');
       handleSearch({
         ...createFilters(initialParams),
         user_query: initialParams.user_query || '',
         page: Number(initialParams.page) || 1,
         pageSize: Number(initialParams.pageSize) || 10,
-        isRefined: initialParams.isRefined === 'true',
         refinedQuery: initialParams.refinedQuery ? JSON.parse(initialParams.refinedQuery) : null,
         ctgPageToken: initialParams.ctgTokenHistory
           ? JSON.parse(initialParams.ctgTokenHistory)[Number(initialParams.page)] || null
@@ -348,7 +385,7 @@ const SearchPage = () => {
   useEffect(() => {
     // Skip changes from automatic backend updates
     if (autoUpdateRef.current) {
-      console.log('[Filters] Skipping reset due to automatic backend update.');
+      filterLogger.debug('[Filters] Skipping reset due to automatic backend update.');
       autoUpdateRef.current = false;
       prevFiltersRef.current = filters;
       return;
@@ -356,7 +393,7 @@ const SearchPage = () => {
 
     // Skip reset logic if updated by restoration
     if (restoredRef.current) {
-      console.log('[Filters] Skipping effect due to restoration of state.');
+      filterLogger.debug('[Filters] Skipping effect due to restoration of state.');
       prevFiltersRef.current = filters;
       restoredRef.current = false;
       return;
@@ -365,16 +402,16 @@ const SearchPage = () => {
     // Exclude initial mount from change detection
     if (initialMountRef.current) {
       initialMountRef.current = false;
-      console.log('[Filters] Initial mount completed.');
+      filterLogger.debug('[Filters] Initial mount completed.');
       prevFiltersRef.current = filters;
       return;
     }
 
-    console.log('[Filters] Filters changed:', filters);
+    filterLogger.debug('[Filters] Filters changed:', filters);
 
     const prevFilters = prevFiltersRef.current;
-    console.log('[Filters] Previous filters:', prevFilters);
-    console.log('[Filters] Current filters:', filters);
+    filterLogger.debug('[Filters] Previous filters:', prevFilters);
+    filterLogger.debug('[Filters] Current filters:', filters);
 
     const changedKeys = Object.keys(filters).filter((key) => {
       if (key === 'refinedQuery') {
@@ -382,12 +419,12 @@ const SearchPage = () => {
       }
       return filters[key] !== prevFilters[key];
     });
-    console.log('[Filters] Changed keys:', changedKeys);
+    filterLogger.debug('[Filters] Changed keys:', changedKeys);
 
     prevFiltersRef.current = filters;
 
     if (cameFromDetailRef.current) {
-      console.log('[Filters] Skipping page reset due to return from detail page.');
+      filterLogger.debug('[Filters] Skipping page reset due to return from detail page.');
       cameFromDetailRef.current = false;
       return;
     }
@@ -396,23 +433,24 @@ const SearchPage = () => {
       changedKeys.length === 0 ||
       (changedKeys.length <= 3 && changedKeys.every((key) => ['page', 'refinedQuery', 'ctgPageToken'].includes(key)))
     ) {
-      console.log('[Filters] Only page, refinedQuery, or ctgPageToken changed (or no changes), skipping reset.');
+      filterLogger.debug('[Filters] Only page, refinedQuery, or ctgPageToken changed (or no changes), skipping reset.');
       return;
     }
 
-    console.log('[Filters] Resetting page, refined query, and CTG token history due to manual filter change.');
-    setIsRefined(false);
+    filterLogger.debug('[Filters] Resetting page, refined query, and CTG token history due to manual filter change.');
     setRefinedQuery(null);
     setPage(1);
     setCtgTokenHistory({});
   }, [filters, sourcesString]);
 
   const handleViewDetails = (item) => {
-    console.log('[Detail] View details for item:', item);
+    detailLogger.debug('[Detail] View details for item:', item);
 
     const stateToPass = {
       filters,
+      pubmedFilters, // ADD: Include pubmedFilters in state to pass to detail page
       results,
+      baseResults,
       page,
       pageSize,
       refinedQuery,
@@ -442,6 +480,7 @@ const SearchPage = () => {
         journal: item.pm_data?.journal || null,
         pubDate: item.pm_data?.pubDate || null,
         ref_nctids: item.ctg_data?.ref_nctids || [item.nctid],
+        publication_types: item.pm_data?.publication_types || [],
         page: page,
         index: results?.results?.findIndex(r => r.id === item.id) || 0,
         source: item.source || 'PM'
@@ -461,6 +500,7 @@ const SearchPage = () => {
         pubDate: item.pubDate || item.date || null,
         structured_info: item.source === 'CTG' ? item.structured_info : null,
         ref_nctids: item.type === 'CTG' ? [] : (item.ref_nctids || []),
+        publication_types: item.publication_types || [],
         page: page,
         index: results?.results?.findIndex(r => r.id === item.id) || 0,
         source: item.type
@@ -470,6 +510,7 @@ const SearchPage = () => {
     // Update sessionStorage cache
     const cached = loadCache() || { pageCache: {} };
     cached.filters = filters;
+    cached.pubmedFilters = pubmedFilters; // ADD: Save PubMed filters to cache
     cached.pageSize = pageSize;
     cached.searchHistory = searchHistory;
     cached.currentPage = page;
@@ -482,8 +523,10 @@ const SearchPage = () => {
     cached.pageCache[page] = { results, refinedQuery, ctgTokenHistory };
     cached.patientMode = patientMode;
     cached.patientResults = patientResults;
-  cached.dynamicQueries = dynamicQueries;
+    cached.dynamicQueries = dynamicQueries;
     cached.selectedQuery = selectedQuery;
+    // Persist baseResults so QueryList can restore original results on return
+    cached.baseResults = baseResults;
     saveCache(cached);
 
     // Navigate based on item type
@@ -511,9 +554,35 @@ const SearchPage = () => {
   // Helper to remove empty values from filter object
   const preparePayload = (filtersObj) => {
     return Object.entries(filtersObj).reduce((acc, [key, value]) => {
+      // Always include boolean fields (pmc_open_access, ctg_has_results)
+      if (key === 'pmc_open_access' || key === 'ctg_has_results') {
+        acc[key] = value !== undefined ? value : (key === 'pmc_open_access' ? true : false);
+        return acc;
+      }
+      
+      // Always include ctg_status array (even if empty)
+      if (key === 'ctg_status') {
+        acc[key] = Array.isArray(value) ? value : [];
+        return acc;
+      }
+      
+      // Skip undefined, null, empty string
       if (value === undefined || value === null || value === '') {
         return acc;
       }
+      
+      // Skip empty arrays
+      if (Array.isArray(value) && value.length === 0) {
+        return acc;
+      }
+      
+      // Skip empty publication_date objects
+      if (key === 'publication_date' && typeof value === 'object') {
+        if (!value.type && !value.from_year && !value.to_year) {
+          return acc;
+        }
+      }
+      
       acc[key] = value;
       return acc;
     }, {});
@@ -530,27 +599,52 @@ const SearchPage = () => {
   }
 
   const handleQuerySelect = (data) => {
-    console.log('[Search] API response:', data);
+    searchLogger.debug('query response:', data);
       
-    console.log('[Search] API response type:', typeof data.results);
-    console.log('[Search] API response results:', data.results);
+    searchLogger.debug('API response type:', typeof data.results);
+    searchLogger.debug('API response results:', data.results);
 
     let rawFilters = { ...filters, user_query: query, page: 1, pageSize, ctgPageToken: null };
     const updatedFilters = { ...rawFilters };
+
+    
+    // clear filter sidebar
+    try {
+      setPubmedFilters( {
+      source_type: [],
+      article_type: [],
+      species: [],
+      age: [],
+      publication_date: {
+        type: null,
+        from_year: '',
+        to_year: ''
+      },
+      pmc_open_access: false,
+      ctg_has_results: false,
+      ctg_status: []
+    });
+      searchLogger.debug('[Filters] Cleared filters for new query results');
+    } catch (e) {
+      searchLogger.error('[Filters] Failed to clear filters:', e);
+    }
     
     // Save search_key
     if (data.search_key) {
-      console.log('[Search] Setting searchKey:', data.search_key);
+      searchLogger.debug('Setting searchKey:', data.search_key);
       setSearchKey(data.search_key);
       setActiveFilters(null);
       setHasAppliedFilters(false);
     } else {
-      console.log('[Search] No search_key received in response');
+      searchLogger.debug('No search_key received in response');
     }
 
     // Save applied queries information (actual queries sent to API)
     if (data.appliedQueries) {
+      searchLogger.debug('🔍 [DEBUG] Updating appliedQueries with:', data.appliedQueries);
       setAppliedQueries(data.appliedQueries);
+    } else {
+      searchLogger.warn('⚠️ [DEBUG] No appliedQueries in response, data:', data);
     }
     setRefinedQuery(data.refinedQuery || null)
     setPage(1);
@@ -564,15 +658,29 @@ const SearchPage = () => {
     });
 
     const newParams = buildUrlParams({
-      ...updatedFilters,
-      isRefined: updatedFilters.isRefined ? "true" : "false"
+      ...updatedFilters
     });
-    console.log('[Search] Updating URL and cache with newParams:', newParams);
+    searchLogger.debug('[Search] Updating URL and cache with newParams:', newParams);
     setSearchParams(newParams);
     navigate({ search: "?" + new URLSearchParams(newParams).toString() }, { replace: true });
 
     const cached = loadCache() || {};
     cached.filters = updatedFilters;
+    // Persist the cleared pubmed filters (we applied them above)
+    cached.pubmedFilters =  {
+      source_type: [],
+      article_type: [],
+      species: [],
+      age: [],
+      publication_date: {
+        type: null,
+        from_year: '',
+        to_year: ''
+      },
+      pmc_open_access: false,
+      ctg_has_results: false,
+      ctg_status: []
+    }; 
     cached.pageSize = updatedFilters.pageSize;
     cached.searchHistory = [updatedFilters, ...searchHistory];
     cached.currentPage = updatedFilters.page;
@@ -597,32 +705,37 @@ const SearchPage = () => {
     cached.patientResults = patientResults;
     cached.dynamicQueries = dynamicQueries;
     cached.selectedQuery = selectedQuery;
+    // Persist baseResults for QueryList restore
+    cached.baseResults = baseResults;
     saveCache(cached);
-    console.log('[Search] Search completed, current page:', updatedFilters.page);
+    searchLogger.debug('[Search] Search completed, current page:', updatedFilters.page);
     
   } 
   const handlePatientQuerySelect = (data) => {
-    console.log('[Search] API response:', data);
+    searchLogger.debug('[Search] API response:', data);
       
-    console.log('[Search] API response type:', typeof data.results);
-    console.log('[Search] API response results:', data.results);
+    searchLogger.debug('[Search] API response type:', typeof data.results);
+    searchLogger.debug('[Search] API response results:', data.results);
 
     let rawFilters = { ...filters, user_query: query, page: 1, pageSize, ctgPageToken: null };
     const updatedFilters = { ...rawFilters };
     
     // Save search_key
     if (data.search_key) {
-      console.log('[Search] Setting searchKey:', data.search_key);
+      searchLogger.debug('[Search] Setting searchKey:', data.search_key);
       setSearchKey(data.search_key);
       setActiveFilters(null);
       setHasAppliedFilters(false);
     } else {
-      console.log('[Search] No search_key received in response');
+      searchLogger.debug('[Search] No search_key received in response');
     }
 
     // Save applied queries information (actual queries sent to API)
     if (data.appliedQueries) {
+      searchLogger.debug('🔍 [DEBUG] Updating appliedQueries with (location 2):', data.appliedQueries);
       setAppliedQueries(data.appliedQueries);
+    } else {
+      searchLogger.warn('⚠️ [DEBUG] No appliedQueries in response (location 2), data:', data);
     }
     setRefinedQuery(data.refinedQuery || null)
     setPage(data.page);
@@ -636,15 +749,15 @@ const SearchPage = () => {
     });
 
     const newParams = buildUrlParams({
-      ...updatedFilters,
-      isRefined: updatedFilters.isRefined ? "true" : "false"
+      ...updatedFilters
     });
-    console.log('[Search] Updating URL and cache with newParams:', newParams);
+    searchLogger.debug('[Search] Updating URL and cache with newParams:', newParams);
     setSearchParams(newParams);
     navigate({ search: "?" + new URLSearchParams(newParams).toString() }, { replace: true });
     
     const cached = loadCache() || {};
     cached.filters = updatedFilters;
+    cached.pubmedFilters = pubmedFilters; // ADD: Save PubMed filters (location 2)
     cached.pageSize = updatedFilters.pageSize;
     cached.searchHistory = [updatedFilters, ...searchHistory];
     cached.currentPage = updatedFilters.page;
@@ -669,26 +782,27 @@ const SearchPage = () => {
     cached.patientResults = patientResults;
     cached.dynamicQueries = dynamicQueries;
     cached.selectedQuery = selectedQuery;
+    // Persist baseResults for QueryList restore
+    cached.baseResults = baseResults;
     saveCache(cached);
-    console.log('[Search] Search completed, current page:', updatedFilters.page);
+    searchLogger.debug('[Search] Search completed, current page:', updatedFilters.page);
   }
 
   
 
   // Search API call and cache update (with refinedQuery applied)
   const handleSearch = async (customParams = null, forceNewSearch = false) => {
-    console.log('[Search] handleSearch called with params:', customParams, 'forceNewSearch:', forceNewSearch);
+    searchLogger.debug('[Search] handleSearch called with params:', customParams, 'forceNewSearch:', forceNewSearch);
     
     // Force new search: completely reset all states like initial entry
     if (forceNewSearch) {
-      console.log('[Search] Force new search - completely resetting all states like initial entry');
+      searchLogger.debug('[Search] Force new search - completely resetting all states like initial entry');
       
       // Save current query for restoration after backend response
       const currentUserQuery = query.trim();
       
       // Reset all search-related states
       setResults(null);
-      setIsRefined(false);
       setRefinedQuery(null);
       setAppliedQueries(null);
       setPage(1);
@@ -709,24 +823,31 @@ const SearchPage = () => {
       const searchPayload = {
         user_query: currentUserQuery,
         sources: resetFilters.sources,
+        article_type: filters.article_type || [],
+        species: filters.species || [],
+        age: filters.age || [],
+        publication_date: filters.publication_date || null,
+        pmc_open_access: filters.pmc_open_access !== undefined ? filters.pmc_open_access : true,
+        ctg_has_results: filters.ctg_has_results || false,
+        ctg_status: filters.ctg_status || [],
         page: 1,
         pageSize: pageSize
       };
       
-      console.log('[Search] Force new search with payload:', searchPayload);
+      searchLogger.debug('[Search] Force new search with payload:', searchPayload);
       
       setLoading(true);
       try {
         let data = await searchClinicalTrials(searchPayload);
-        console.log('[Search] Force new search API response:', data);
+        searchLogger.debug('[Search] Force new search API response:', data);
           
           // Set search_key
           if (data.search_key) {
-            console.log('[Search] Setting searchKey from force new search:', data.search_key);
+            searchLogger.debug('[Search] Setting searchKey from force new search:', data.search_key);
             setSearchKey(data.search_key);
           }
         
-        console.log('[Search] Force new search API response:', data);
+        searchLogger.debug('[Search] Force new search API response:', data);
         
         // Save applied queries information
         if (data.appliedQueries) {
@@ -736,9 +857,8 @@ const SearchPage = () => {
         // Store refinedQuery but don't apply to filters (protect user input fields)
         let finalFilters = resetFilters;
         if (data.refinedQuery) {
-          console.log('[Search] Received refinedQuery from API (not applying to filters):', data.refinedQuery);
+          searchLogger.debug('[Search] Received refinedQuery from API (not applying to filters):', data.refinedQuery);
           setRefinedQuery(data.refinedQuery);
-          setIsRefined(true);
         }
         
         // Set filters to default values (protect user input fields)
@@ -775,10 +895,10 @@ const SearchPage = () => {
         await saveSearch(historyEntry);
         setSearchHistory([historyEntry]);
         
-        console.log('[Search] Force new search completed successfully');
+        searchLogger.debug('[Search] Force new search completed successfully');
         
       } catch (error) {
-        console.error('[Search] Force new search error:', error);
+        searchLogger.error('[Search] Force new search error:', error);
         setResults(null);
       } finally {
         setLoading(false);
@@ -793,18 +913,18 @@ const SearchPage = () => {
       let rawFilters = { ...filters, user_query: query, page: 1, pageSize, ctgPageToken: null };
       const effectiveFilters = preparePayload(rawFilters);
 
-      console.log('[Search] Getting patient query using filters:', effectiveFilters);
+      searchLogger.debug('[Search] Getting patient query using filters:', effectiveFilters);
       setLoading(true);
       let data = {}
       try {
         data = await getPatientQueries(effectiveFilters);
       } catch (error) {
         data = null
-        console.log('[Search] Patient search error:', effectiveFilters);
+        searchLogger.error('[Search] Patient search error:', effectiveFilters);
       } finally {
         setLoading(false)
       }
-      console.log('[Search] received response:', data)
+      searchLogger.debug('[Search] received response:', data)
       const results = data?.final_results?.filter(r => r.total > 0 || r.name === "Default")
       setPatientResults(results)
 
@@ -822,22 +942,32 @@ const SearchPage = () => {
     // Regular search (pagination, etc.)
     let rawFilters;
     if (!customParams) {
-      rawFilters = { ...filters, user_query: query, page: 1, pageSize, ctgPageToken: null };
-      console.log('[Search] Using current filters with query:', rawFilters);
+      // Include PubMed filters in initial search
+      rawFilters = { 
+        ...filters, 
+        ...pubmedFilters,  // Add PubMed filters
+        user_query: query, 
+        page: 1,  // Always reset to page 1 for new search
+        pageSize, 
+        ctgPageToken: null 
+      };
+      searchLogger.debug('[Search] Current pubmedFilters state:', pubmedFilters);
+      searchLogger.debug('[Search] Using current filters with query (including PubMed filters):', rawFilters);
     } else {
       rawFilters = customParams;
+      searchLogger.debug('[Search] Using custom params:', rawFilters);
     }
     
     const effectiveFilters = preparePayload(rawFilters);
-    console.log('[Search] Prepared effective filters for API:', effectiveFilters);
+    searchLogger.debug('[Search] AFTER preparePayload - effective filters for API:', effectiveFilters);
     setLoading(true);
     try {
       effectiveFilters.ctgPageToken = ctgTokenHistory[effectiveFilters.page] || null;
       const data = await searchClinicalTrials(effectiveFilters);
-      console.log('[Search] API response:', data);
+      searchLogger.debug('[Search] API response:', data);
       
-      console.log('[Search] API response type:', typeof data.results);
-      console.log('[Search] API response results:', data.results);
+      searchLogger.debug('[Search] API response type:', typeof data.results);
+      searchLogger.debug('[Search] API response results:', data.results);
 
       setBaseResults({
         results: Array.isArray(data.results) ? data.results : [],
@@ -845,18 +975,25 @@ const SearchPage = () => {
         total: data.total || 0,
         totalPages: data.totalPages || 1,
         filter_stats: data.filter_stats,
+        search_key: data.search_key,
         refinedQuery: data.refinedQuery,
         appliedQueries: data.appliedQueries
       })
       
-      // Save search_key
+      // Save search_key and reset page to 1 for new searches
       if (data.search_key) {
-        console.log('[Search] Setting searchKey:', data.search_key);
+        searchLogger.debug('[Search] Setting searchKey:', data.search_key);
         setSearchKey(data.search_key);
         setActiveFilters(null);
         setHasAppliedFilters(false);
+        
+        // Reset page to 1 if this is a new search (not pagination)
+        if (!customParams || effectiveFilters.page === 1) {
+          setPage(1);
+          searchLogger.debug('[Search] Reset page to 1 for new search');
+        }
       } else {
-        console.log('[Search] No search_key received in response');
+        searchLogger.debug('[Search] No search_key received in response');
       }
 
       // Save applied queries information (actual queries sent to API)
@@ -867,11 +1004,9 @@ const SearchPage = () => {
       // Store refinedQuery but don't apply to filters (protect user input fields)
       const updatedFilters = { ...rawFilters };
       if (data.refinedQuery) {
-        console.log('[Search] Received refinedQuery from API (not applying to filters):', data.refinedQuery);
+        searchLogger.debug('[Search] Received refinedQuery from API (not applying to filters):', data.refinedQuery);
         updatedFilters.refinedQuery = data.refinedQuery;
-        updatedFilters.isRefined = true;
         setRefinedQuery(data.refinedQuery);
-        setIsRefined(true);
       }
       
       // Set results according to backend response structure - already comes as integrated array
@@ -907,16 +1042,15 @@ const SearchPage = () => {
             await saveSearch(historyEntry);
             setSearchHistory([historyEntry, ...searchHistory]);
           } catch (error) {
-            console.error('Failed to save search history:', error);
+            searchLogger.error('Failed to save search history:', error);
           }
         }
       }
       
       const newParams = buildUrlParams({
-        ...updatedFilters,
-        isRefined: updatedFilters.isRefined ? "true" : "false"
+        ...updatedFilters
       });
-      console.log('[Search] Updating URL and cache with newParams:', newParams);
+      searchLogger.debug('[Search] Updating URL and cache with newParams:', newParams);
       setSearchParams(newParams);
       navigate({ search: "?" + new URLSearchParams(newParams).toString() }, { replace: true });
       
@@ -926,6 +1060,7 @@ const SearchPage = () => {
       }
 
       cached.filters = updatedFilters;
+      cached.pubmedFilters = pubmedFilters; // ADD: Save PubMed filters (location 3 - handleSearch)
       cached.pageSize = updatedFilters.pageSize;
       cached.searchHistory = [updatedFilters, ...searchHistory];
       cached.currentPage = updatedFilters.page;
@@ -950,23 +1085,58 @@ const SearchPage = () => {
       cached.patientResults = patientResults;
       cached.dynamicQueries = dynamicQueries;
       cached.selectedQuery = selectedQuery;
+      // Persist baseResults for QueryList restore
+      cached.baseResults = baseResults;
       saveCache(cached);
-      console.log('[Search] Search completed, current page:', updatedFilters.page);
+      searchLogger.debug('[Search] Search completed, current page:', updatedFilters.page);
     } catch (error) {
-      console.error('[Search] Error during search:', error);
+      searchLogger.error('[Search] Error during search:', error);
       setResults(null);
     } finally {
       setLoading(false);
     }
   };
 
-    // Filter application function
+  // Filter application function
   const handleApplyFilters = async (filterParams) => {
+    filterLogger.debug('[Filter] Apply filters called with params:', filterParams);
+    filterLogger.debug('[Filter] Current searchKey:', searchKey);
+    filterLogger.debug('🔍 [DEBUG] Current pubmedFilters state:', pubmedFilters);
+    filterLogger.debug('🔍 [DEBUG] Incoming filterParams:', filterParams);
+    
+    // Update PubMed filters state
+    setPubmedFilters(filterParams);
+    filterLogger.debug('🔍 [DEBUG] Updated pubmedFilters to:', filterParams);
+    
+    // If no searchKey exists, perform initial filtered search
+    if (!searchKey) {
+      filterLogger.debug('[Filter] No searchKey - performing initial filtered search');
+      filterLogger.debug('🔍 [DEBUG] About to call handleSearch() with filterParams:', filterParams);
+      // Perform new search with filters
+      await handleSearch();
+      return;
+    }
+    
+    // Otherwise, perform post-filter on existing results
     setLoading(true);
     try {
-      console.log('[Filter] Applying filters:', filterParams);
-      const data = await filterSearchResults(filterParams);
-      console.log('[Filter] Filter response received:', data);
+      filterLogger.debug('[Filter] Applying post-filters with searchKey:', searchKey);
+      
+      // Always reset to page 1 when filters change
+      const filterRequestParams = {
+        ...filterParams,
+        page: 1,
+        page_size: pageSize
+      };
+      
+      const data = await filterSearchResults(filterRequestParams);
+      filterLogger.debug('[Filter] Filter response received:', data);
+      
+      // Update appliedQueries with filtered queries if available
+      if (data.appliedQueries) {
+        filterLogger.debug('[Filter] Updating appliedQueries with filtered queries:', data.appliedQueries);
+        setAppliedQueries(data.appliedQueries);
+      }
       
       // Update with filtered results - maintain original search result structure
       setResults({
@@ -985,22 +1155,26 @@ const SearchPage = () => {
       
       setActiveFilters(data.filters_applied);
       setHasAppliedFilters(true);
-      setPage(data.page || 1);
+      setPage(1); // Always reset to page 1 on filter change
       
-      // Update cache - include filter application state
+      // Store filter cache key for future pagination
+      sessionStorage.setItem('filterCacheKey', data.filter_cache_key || '');
+      
+      // Update cache - include filter application state and filtered queries
       const cacheToSave = {
         filters,
         pageSize,
         searchHistory,
-        currentPage: data.page || 1,
+        currentPage: 1, // Reset to page 1
         lastSearchedQuery,
-        appliedQueries,
+        appliedQueries: data.appliedQueries || appliedQueries,
         query,
         searchKey,
         activeFilters: data.filters_applied,
         hasAppliedFilters: true,
+        filterCacheKey: data.filter_cache_key,
         pageCache: {
-          [data.page || 1]: {
+          1: {
             results: {
               ...results,
               results: Array.isArray(data.results) ? data.results : [],
@@ -1023,10 +1197,14 @@ const SearchPage = () => {
         dynamicQueries,
         selectedQuery,
       };
+      // Ensure baseResults persisted so QueryList can restore original results
+      cacheToSave.baseResults = baseResults || (results || null);
       saveCache(cacheToSave);
       
+      filterLogger.debug('[Filter] ✅ Filter applied successfully, page reset to 1');
+      
     } catch (error) {
-      console.error('Filter error:', error);
+      filterLogger.error('Filter error:', error);
       alert('Failed to apply filters. Please try again.');
     } finally {
       setLoading(false);
@@ -1036,72 +1214,115 @@ const SearchPage = () => {
 
   // Page navigation: use cache if available, otherwise make API call
   const goToPage = async (newPage) => {
-    console.log('[Pagination] goToPage called. Current page:', page, 'New page:', newPage);
-    console.log('[Pagination] Has applied filters:', hasAppliedFilters, 'Active filters:', activeFilters);
+    searchLogger.debug('[Pagination] goToPage called. Current page:', page, 'New page:', newPage);
+    searchLogger.debug('[Pagination] Has applied filters:', hasAppliedFilters, 'Active filters:', activeFilters);
+    searchLogger.debug('[Pagination] searchKey:', searchKey);
     
     if (patientMode) {
-      console.log("NEXT PAGE FOR SEARCH:", patientResults[selectedQuery])
+      searchLogger.debug("NEXT PAGE FOR SEARCH:", patientResults[selectedQuery])
       // Update page for selectedQuery
       let currentResults = patientResults[selectedQuery]
       currentResults.page = newPage
       setLoading(true)
       const newResults = await getPatientNextPage(currentResults)
       currentResults.results = newResults
-      console.log("[Pagination] setting patient query", currentResults)
+      searchLogger.debug("[Pagination] setting patient query", currentResults);
       handlePatientQuerySelect(currentResults)
       setLoading(false)
       return;
     }
 
-    const cached = loadCache();
-    if (cached && cached.pageCache && cached.pageCache[newPage]) {
-      const pageData = cached.pageCache[newPage];
-      console.log('[Pagination] Found cached data for page', newPage, ':', pageData);
-      setPage(newPage);
-      setResults(pageData.results);
-      setRefinedQuery(pageData.refinedQuery);
-      setCtgTokenHistory(pageData.ctgTokenHistory);
-      setPatientMode(cached.patientMode);
-      setPatientResults(cached.patientResults);
-      setDynamicQueries(cached.dynamicQueries);
-      setSelectedQuery(cached.selectedQuery);
-      const newParams = buildUrlParams({
-        ...cached.filters,
-        isRefined: pageData.refinedQuery ? "true" : "false"
-      });
-      console.log('[Pagination] Updating URL for cached page change:', newParams);
-      setSearchParams(newParams);
-      navigate({ search: "?" + new URLSearchParams(newParams).toString() }, { replace: true });
+    // For filtered results, use filter API with the same filter parameters
+    if (hasAppliedFilters && activeFilters && searchKey) {
+      searchLogger.debug('[Pagination] Using filter API for page', newPage, 'with active filters');
+      setLoading(true);
+      
+      try {
+        const filterCacheKey = sessionStorage.getItem('filterCacheKey') || '';
+        searchLogger.debug('[Pagination] Filter cache key:', filterCacheKey);
+        
+        // Use the same filter parameters but update page number
+        const filterRequestParams = {
+          search_key: searchKey,
+          ...activeFilters,
+          page: newPage,
+          page_size: pageSize
+        };
+        
+        const data = await filterSearchResults(filterRequestParams);
+        searchLogger.debug('[Pagination] Received filtered page data:', data);
+        
+        // Update page and results
+        setPage(newPage);
+        setResults({
+          results: Array.isArray(data.results) ? data.results : [],
+          counts: data.counts || { total: 0, merged: 0, pm_only: 0, ctg_only: 0 },
+          total: data.total || 0,
+          totalPages: data.totalPages || 1,
+          filter_stats: data.filter_stats
+        });
+        
+        // Update appliedQueries if provided
+        if (data.appliedQueries) {
+          setAppliedQueries(data.appliedQueries);
+        }
+        
+        searchLogger.debug('[Pagination] ✅ Filtered page changed successfully');
+      } catch (error) {
+        searchLogger.error('[Pagination] ❌ Filter pagination failed:', error);
+        alert('Failed to load page. Please try again.');
+      } finally {
+        setLoading(false);
+      }
       return;
     }
-    
-    console.log('[Pagination] No cache for page', newPage, '- triggering search.');
-    setPage(newPage);
-    
-    // Call filter API if filters are applied, otherwise call regular search API
-    if (hasAppliedFilters && activeFilters && searchKey) {
-      console.log('[Pagination] Applying filters for page', newPage, 'with searchKey:', searchKey);
-      handleApplyFilters({
-        search_key: searchKey,
-        ...activeFilters,
-        page: newPage
-      });
-    } else {
-      console.log('[Pagination] Regular search for page', newPage);
-      handleSearch({
-        ...filters,
-        page: newPage,
-        pageSize,
-        isRefined,
-        refinedQuery,
-        ctgPageToken: ctgTokenHistory[newPage] || null
-      });
+
+    // For regular search results, use pagination API with search_key
+    if (searchKey) {
+      searchLogger.debug('[Pagination] Using pagination API with searchKey:', searchKey);
+      setLoading(true);
+      try {
+        const data = await getSearchNextPage({
+          search_key: searchKey,
+          page: newPage,
+          page_size: pageSize
+        });
+        
+        searchLogger.debug('[Pagination] Received paginated data:', data);
+        
+        // Update state with paginated results
+        setPage(newPage);
+        setResults({
+          results: Array.isArray(data.results) ? data.results : [],
+          counts: data.counts || { total: 0, merged: 0, pm_only: 0, ctg_only: 0 },
+          total: data.total || 0,
+          totalPages: data.totalPages || 1,
+          filter_stats: data.filter_stats
+        });
+        
+        // Update appliedQueries if provided
+        if (data.appliedQueries) {
+          setAppliedQueries(data.appliedQueries);
+        }
+        
+        searchLogger.debug('[Pagination] ✅ Page changed successfully using pagination API');
+      } catch (error) {
+        searchLogger.error('[Pagination] ❌ Pagination API failed:', error);
+        alert('Failed to load page. Please try again.');
+      } finally {
+        setLoading(false);
+      }
+      return;
     }
+
+    // No searchKey - this shouldn't happen for pagination after initial search
+    searchLogger.warning('[Pagination] No searchKey available - cannot paginate without initial search');
+    alert('Search session expired. Please perform a new search.');
   };
 
   // Handle result item selection
   const handleResultSelect = (result) => {
-    console.log('[Result] Selected result:', result);
+    searchLogger.debug('[Result] Selected result:', result);
     
     // Transform data to match new integrated structure
     let transformedResult;
@@ -1173,30 +1394,29 @@ const SearchPage = () => {
       };
     }
     
-    console.log('[Result] Transformed result for sidebar:', transformedResult);
+    searchLogger.debug('[Result] Transformed result for sidebar:', transformedResult);
     setSelectedResult(transformedResult);
   };
 
   // Total pages (based on integrated results)
   const totalPages = results ? results.totalPages : 1;
-  console.log('[Pagination] Calculated total pages:', totalPages);
+  searchLogger.debug('[Pagination] Calculated total pages:', totalPages);
 
   // Reset all states when logo is clicked
   const handleLogoClick = () => {
-    console.log('[Logo] Clicked logo. Resetting all states to initial values.');
+    searchLogger.debug('[Logo] Clicked logo. Resetting all states to initial values.');
     setFilters(defaultFilters());
     setQuery('');
     setLastSearchedQuery('');
     setPage(1);
     setPageSize(10);
-    setIsRefined(false);
     setRefinedQuery(null);
     setAppliedQueries(null);
     setCtgTokenHistory({});
     setSearchHistory([]);
     setResults(null);
     sessionStorage.removeItem(SESSION_KEY);
-    console.log('[Logo] State reset complete. Reloading page and navigating to root.');
+    searchLogger.debug('[Logo] State reset complete. Reloading page and navigating to root.');
     navigate('/');
     window.location.reload();
   };
@@ -1291,13 +1511,15 @@ const SearchPage = () => {
       <div className=""><Header/></div>
       
       <div className="flex" style={{ height: 'calc(100vh - 64px)' }}>
-        {/* Left Filter Sidebar */}
+        {/* Left Filter Sidebar - Always visible in non-patient mode */}
         <FilterSidebar
-          isVisible={!!(results && searchKey && !patientMode)}
+          isVisible={!patientMode}
           onApplyFilters={handleApplyFilters}
           isLoading={loading}
           searchKey={searchKey}
           filterStats={results?.filter_stats}
+          filters={pubmedFilters}
+          setFilters={setPubmedFilters}
           expandedWidth="20%"
           collapsedWidth="2rem"
           onToggle={setLeftSidebarOpen}
@@ -1320,7 +1542,7 @@ const SearchPage = () => {
             filters={filters}
             onSubmit={() => {
               if (hasSearchCriteria(query, filters)) {
-                console.log('[SearchBar] Search triggered from SearchBar with filters');
+                searchLogger.debug('[SearchBar] Search triggered from SearchBar with filters');
                 handleSearch();
               }
             }}
@@ -1331,21 +1553,34 @@ const SearchPage = () => {
 
           { patientMode && ( <PatientFilterPanel filters={filters} setFilters={setFilters} />)}
 
+          {/* Eligibility Criteria Section - Independent of search/filter/pagination */}
+          <div className="w-full max-w-7xl mx-auto px-4 mt-4">
+            <EligibilityCriteria
+              inclusionCriteria={inclusionCriteria}
+              setInclusionCriteria={setInclusionCriteria}
+              exclusionCriteria={exclusionCriteria}
+              setExclusionCriteria={setExclusionCriteria}
+            />
+          </div>
+
           <div className="w-full max-w-7xl mx-auto px-4">
-            <div className="flex text-sm items-center ml-1  gap-1">
-              <span className={`"text-custom-text font-semibold mr-2 " `}>Select Browsing Mode: </span>
+            <div className="flex text-sm items-center ml-1 gap-2">
+              <span className="text-custom-text font-semibold mr-2">Select Browsing Mode:</span>
               <button
                 onClick={function handleClick() {
                   setPatientMode(false) 
                   setFilters(createFilters())
                   setResults(null)
                   setPatientResults(null)
-                  }}
-                className={`hover:bg-gray-200 hover:text-gray-800 mr-1 text-custom-text-subtle py-1 px-4 transition-colors font-semibold rounded-sm ${
-                      !patientMode ? ' bg-green-100 text-green-800' : 'text-custom-text-subtle' }`}
+                }}
+                className={`flex items-center gap-1 py-1 px-1 transition-all ${
+                  !patientMode 
+                    ? 'text-gray-900 font-semibold' 
+                    : 'text-gray-400 font-normal hover:text-gray-600'
+                }`}
               >
-                
-                Default
+                <span>Expert</span>
+                <span className={`text-lg ${!patientMode ? 'opacity-100' : 'opacity-0'}`}>✓</span>
               </button>
               <button
                 onClick={function handleClick() {
@@ -1353,11 +1588,15 @@ const SearchPage = () => {
                   setFilters(createFilters())
                   setResults(null)
                   setPatientResults(null)
-                  }}
-                className={`hover:bg-gray-200 hover:text-gray-800  py-1 px-4 transition-colors font-semibold rounded-sm ${
-                     patientMode ? 'bg-blue-100 text-custom-blue-deep' : 'text-custom-text-subtle' }`}
+                }}
+                className={`flex items-center gap-1 py-1 px-1 transition-all ${
+                  patientMode 
+                    ? 'text-gray-900 font-semibold' 
+                    : 'text-gray-400 font-normal hover:text-gray-600'
+                }`}
               >
-                Patient
+                <span>Patient</span>
+                <span className={`text-lg ${patientMode ? 'opacity-100' : 'opacity-0'}`}>✓</span>
               </button>
             </div>
          
@@ -1391,6 +1630,7 @@ const SearchPage = () => {
               dynamicQueries={dynamicQueries}
               handleQuerySelect={handleQuerySelect}
               baseResults={baseResults}
+              pubmedFilters={pubmedFilters}
              />
           )}
 
@@ -1468,15 +1708,15 @@ const SearchPage = () => {
             
             
               
-              {/* AI Insights Section */}
-            { /* {!patientMode && results && results.results && results.results.length > 0 && (
+              {/* AI Insights Section   
+            {!patientMode && results && results.results && results.results.length > 0 && (
                 <SearchInsights
                   searchKey={searchKey}
                   page={page}
                   appliedFilters={activeFilters}
                   results={results}
                 />
-              )} */ }
+              )} */}
             </>
           )}
 
@@ -1512,7 +1752,9 @@ const SearchPage = () => {
           expandedWidth="30%"    
           collapsedWidth="2rem"
           onToggle={setRightSidebarOpen}
-          otherSidebarOpen={leftSidebarOpen}    
+          otherSidebarOpen={leftSidebarOpen}
+          inclusionCriteria={inclusionCriteria}
+          exclusionCriteria={exclusionCriteria}
         />
       </div>
     </>

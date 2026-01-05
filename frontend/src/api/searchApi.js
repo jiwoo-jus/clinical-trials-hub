@@ -1,10 +1,12 @@
 // src/api/searchApi.js
+/* eslint-disable no-undef */
 import axios from 'axios';
+import { apiLogger } from '../utils/logger';
 
 const BASE_URL = (() => {
   const url = process.env.REACT_APP_API_URL;
-  console.log('SearchAPI Environment URL:', url);
-  console.log('SearchAPI Node Environment:', process.env.NODE_ENV);
+  apiLogger.debug('Environment URL:', url);
+  apiLogger.debug('Node Environment:', process.env.NODE_ENV);
   
   if (process.env.NODE_ENV === 'development') {
     return url || 'http://localhost:5050';
@@ -17,50 +19,64 @@ const BASE_URL = (() => {
   return url;
 })();
 
-console.log('SearchAPI Final BASE_URL:', BASE_URL);
+apiLogger.info('Final BASE_URL:', BASE_URL);
 
 export const searchClinicalTrials = async (params) => {
   try {
-    console.log('Making request to:', `${BASE_URL}/api/search`);
+    apiLogger.debug('Making request to:', `${BASE_URL}/api/search`);
+    apiLogger.debug('🔍 [API] Request payload:', params);
     const response = await axios.post(`${BASE_URL}/api/search`, params);
     return response.data;
   } catch (error) {
-    console.error('API request failed:', error);
+    apiLogger.error('API request failed:', error);
     throw error;
   }
 };
 
 export const getPatientQueries = async (params) => {
   try {
-    console.log('Making request to:', `${BASE_URL}/api/search/patient`);
+    apiLogger.debug('Making request to:', `${BASE_URL}/api/search/patient`);
     const response = await axios.post(`${BASE_URL}/api/search/patient`, params);
     return response.data;
   } catch (error) {
-    console.error('API request failed:', error);
+    apiLogger.error('API request failed:', error);
     throw error;
   }
 };
 
 export const getPatientNextPage = async (params) => {
   try {
-    console.log('Making request to:', `${BASE_URL}/api/search/patient/paging`);
-    console.log(params)
+    apiLogger.debug('Making request to:', `${BASE_URL}/api/search/patient/paging`);
+    apiLogger.debug('Pagination params:', params);
     const response = await axios.post(`${BASE_URL}/api/search/patient/paging`, params);
-    console.log("PAGINATION RESPONSE", response.data)
+    apiLogger.debug('Pagination response:', response.data);
     return response.data;
   } catch (error) {
-    console.error('API request failed:', error);
+    apiLogger.error('API request failed:', error);
+    throw error;
+  }
+};
+
+export const getSearchNextPage = async (params) => {
+  try {
+    apiLogger.debug('Making request to:', `${BASE_URL}/api/search/paging`);
+    apiLogger.debug('📄 Pagination params:', params);
+    const response = await axios.post(`${BASE_URL}/api/search/paging`, params);
+    apiLogger.debug('✅ Pagination response:', response.data);
+    return response.data;
+  } catch (error) {
+    apiLogger.error('❌ Pagination API request failed:', error);
     throw error;
   }
 };
 
 export const filterSearchResults = async (params) => {
   try {
-    console.log('Making filter request to:', `${BASE_URL}/api/search/filter`);
+    apiLogger.debug('Making filter request to:', `${BASE_URL}/api/search/filter`);
     const response = await axios.post(`${BASE_URL}/api/search/filter`, params);
     return response.data;
   } catch (error) {
-    console.error('Filter API request failed:', error);
+    apiLogger.error('Filter API request failed:', error);
     throw error;
   }
 };

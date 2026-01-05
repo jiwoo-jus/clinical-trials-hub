@@ -1,61 +1,181 @@
 import PropTypes from 'prop-types';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { PanelLeft, PanelRight, Settings } from 'lucide-react';
+import EligibilityCheckResults from './EligibilityCheckResults';
+import { checkSystematicReview, getCtgDetail } from '../api/paperApi';
 
-// Helper function to detect and linkify URLs and NCT IDs
+/** ===============================
+ *  Config / Utilities
+ *  =============================== */
+const DEBUG = false;
+
+// Linkify URLs and NCT IDs
 const linkify = (text) => {
   if (!text) return text;
-
   const combinedRegex = /(https?:\/\/[^\s]+)|(NCT\d+)/g;
   const urlPattern = /^https?:\/\//;
   const nctPattern = /^NCT\d+$/;
 
   const parts = text.split(combinedRegex);
 
-  return parts.map((part, index) => {
-    if (!part) return null;
-
-    if (part.match(urlPattern)) {
-      return (
-        <a
-          key={`url-${index}`}
-          href={part}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-blue-600 hover:underline"
-        >
-          {part}
-        </a>
-      );
-    } else if (part.match(nctPattern)) {
-      const nctid = part;
-      return (
-        <a
-          key={`nct-${index}`}
-          href={`https://clinicaltrials.gov/study/${nctid}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-blue-600 hover:underline"
-        >
-          {nctid}
-        </a>
-      );
-    } else {
-      return part;
-    }
-  }).filter(Boolean);
+  return parts
+    .map((part, index) => {
+      if (!part) return null;
+      if (urlPattern.test(part)) {
+        return (
+          <a
+            key={`url-${index}`}
+            href={part}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-custom-blue hover:underline"
+          >
+            {part}
+          </a>
+        );
+      } else if (nctPattern.test(part)) {
+        const nctid = part;
+        return (
+          <a
+            key={`nct-${index}`}
+            href={`https://clinicaltrials.gov/study/${nctid}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-custom-green hover:underline"
+          >
+            {nctid}
+          </a>
+        );
+      } else {
+        return part;
+      }
+    })
+    .filter(Boolean);
 };
 
-const DetailSidebar = ({
-  selectedResult,
-  isVisible = true,
-  defaultOpen = false,
-  expandedWidth = '30%',
-  collapsedWidth = '2rem',
-  onToggle,
-  otherSidebarOpen = false,
-}) => {
-  const OPTIONS = [
+// Extract text content from ClinicalTrials.gov structured info
+const extractCtgTextContent = (structuredInfo) => {
+  if (!structuredInfo) {
+    if (DEBUG) console.log('[extractCtgTextContent] No structured info provided');
+    return '';
+  }
+  const protocol = structuredInfo.protocolSection || structuredInfo;
+  const identification = protocol.identificationModule || {};
+  const description = protocol.descriptionModule || {};
+  const design = protocol.designModule || {};
+  const enrollment = protocol.enrollmentModule || design.enrollmentInfo || {};
+  const conditions = protocol.conditionsModule || {};
+  const interventions = protocol.armsInterventionsModule || {};
+  const outcomes = protocol.outcomesModule || {};
+
+  const parts = [];
+
+  if (identification.briefTitle) parts.push(`Title: ${identification.briefTitle}`);
+  if (identification.officialTitle) parts.push(`Official Title: ${identification.officialTitle}`);
+  if (description.briefSummary) parts.push(`\nBrief Summary:\n${description.briefSummary}`);
+  if (description.detailedDescription) parts.push(`\nDetailed Description:\n${description.detailedDescription}`);
+  if (design.studyType) parts.push(`\nStudy Type: ${design.studyType}`);
+  if (design.phases?.length) parts.push(`Phase: ${design.phases.join(', ')}`);
+  if (design.designInfo) {
+    const d = design.designInfo;
+    if (d.allocation) parts.push(`Allocation: ${d.allocation}`);
+    if (d.interventionModel) parts.push(`Intervention Model: ${d.interventionModel}`);
+    if (d.primaryPurpose) parts.push(`Primary Purpose: ${d.primaryPurpose}`);
+    if (d.maskingInfo?.masking) parts.push(`Masking: ${d.maskingInfo.masking}`);
+  }
+  const enrollmentCount = enrollment.count || design.enrollmentInfo?.count;
+  const enrollmentType = enrollment.type || design.enrollmentInfo?.type;
+  if (enrollmentCount) parts.push(`\nEnrollment: ${enrollmentCount}${enrollmentType ? ` (${enrollmentType})` : ''}`);
+  if (conditions.conditions?.length) parts.push(`\nConditions: ${conditions.conditions.join(', ')}`);
+  if (interventions.interventions?.length) {
+    const interventionList = interventions.interventions.map(i => `${i.type}: ${i.name}`).join(', ');
+    parts.push(`\nInterventions: ${interventionList}`);
+  }
+  if (outcomes.primaryOutcomes?.length) {
+    const outcomeList = outcomes.primaryOutcomes.slice(0, 3).map((o, i) => `${i + 1}. ${o.measure}`).join('\n');
+    parts.push(`\nPrimary Outcomes:\n${outcomeList}`);
+  }
+  if (conditions.keywords?.length) parts.push(`\nKeywords: ${conditions.keywords.join(', ')}`);
+
+  return parts.join('\n');
+};
+
+/** ===============================
+ *  Small Presentational Pieces
+ *  =============================== */
+
+const Section = ({ title, children, dense }) => (
+  <section className="mb-3">
+    {title && (
+      <h4 className="text-sm font-semibold text-slate-800 mb-2 tracking-tight">
+        {title}
+      </h4>
+    )}
+    <div className="rounded-lg p-3 border border-custom-border bg-custom-bg-soft">
+      <div className={` ${dense ? 'space-y-2' : 'space-y-2'}`}>{children}</div>
+    </div>
+  </section>
+);
+Section.propTypes = {
+  title: PropTypes.oneOfType([PropTypes.string, PropTypes.node]),
+  children: PropTypes.node,
+  dense: PropTypes.bool,
+};
+Section.defaultProps = { dense: false };
+
+const MetaRow = ({ label, children }) => (
+  <div className="flex text-sm leading-6">
+    <span className="min-w-[9rem] shrink-0 font-medium text-slate-700">{label}</span>
+    <span className="text-slate-800">{children}</span>
+  </div>
+);
+MetaRow.propTypes = {
+  label: PropTypes.oneOfType([PropTypes.string, PropTypes.node]).isRequired,
+  children: PropTypes.node,
+};
+
+const Tag = ({ children }) => (
+  <span className="inline-flex items-center text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-700">
+    {children}
+  </span>
+);
+Tag.propTypes = { children: PropTypes.node };
+
+const SoftNote = ({ children }) => (
+  <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5">
+    <p className="text-xs text-emerald-700">{children}</p>
+  </div>
+);
+SoftNote.propTypes = { children: PropTypes.node };
+
+const CheckItem = ({ option, checked, onToggle }) => (
+  <label className="flex items-center justify-between cursor-pointer">
+    <div className="flex items-center gap-2">
+      <input
+        type="checkbox"
+        id={option.value}
+        checked={checked}
+        onChange={() => onToggle(option.value)}
+        className="accent-custom-blue w-4 h-4 rounded border-slate-300 focus:ring-2 focus:ring-custom-blue"
+      />
+      <span className="text-sm text-slate-800">{option.label}</span>
+    </div>
+  </label>
+);
+CheckItem.propTypes = {
+  option: PropTypes.shape({
+    label: PropTypes.oneOfType([PropTypes.string, PropTypes.node]).isRequired,
+    value: PropTypes.string.isRequired,
+  }).isRequired,
+  checked: PropTypes.bool.isRequired,
+  onToggle: PropTypes.func.isRequired,
+};
+
+/** ===============================
+ *  Options
+ *  =============================== */
+
+/*const OPTIONS = [
   { label: 'Brief Summary', value: 'BRIEF_SUMMARY' },
   { label: 'Study Details', value: 'STUDY_DETAILS' },
   { label: 'Interventions', value: 'INTERVENTIONS' },
@@ -69,15 +189,16 @@ const DetailSidebar = ({
   { label: 'Secondary Outcomes', value: 'SECONDARY_OUTCOMES' },
   { label: 'Publication Info', value: 'PUBLICATION_INFO' },
   { label: 'Additional Metadata', value: 'ADDITIONAL_METADATA' },
-  { label: 'Abstract', value: 'ABSTRACT' }
-  ];
+  { label: 'Abstract', value: 'ABSTRACT' },
+]; */
 
-  const PM_OPTIONS = [{ label: 'Publication Info', value: 'PUBLICATION_INFO' },
+const PM_OPTIONS = [
+  { label: 'Publication Info', value: 'PUBLICATION_INFO' },
   { label: 'Additional Metadata', value: 'ADDITIONAL_METADATA' },
   { label: 'Abstract', value: 'ABSTRACT' },
-  ];
+];
 
-  const CTG_OPTIONS = [
+const CTG_OPTIONS = [
   { label: 'Brief Summary', value: 'BRIEF_SUMMARY' },
   { label: 'Study Details', value: 'STUDY_DETAILS' },
   { label: 'Interventions', value: 'INTERVENTIONS' },
@@ -88,65 +209,180 @@ const DetailSidebar = ({
   { label: 'Arm Groups', value: 'ARM_GROUPS' },
   { label: 'Eligibility Criteria', value: 'ELIGIBILITY_CRITERIA' },
   { label: 'Primary Outcomes', value: 'PRIMARY_OUTCOMES' },
-  { label: 'Secondary Outcomes', value: 'SECONDARY_OUTCOMES' }
+  { label: 'Secondary Outcomes', value: 'SECONDARY_OUTCOMES' },
+];
+
+/** ===============================
+ *  Main Component
+ *  =============================== */
+
+const DetailSidebar = ({
+  selectedResult,
+  isVisible = true,
+  defaultOpen = false,
+  expandedWidth = '30%',
+  collapsedWidth = '2rem',
+  onToggle,
+  otherSidebarOpen = false,
+  inclusionCriteria = [],
+  exclusionCriteria = [],
+}) => {
+  const OPTIONS = [
+  { label: 'Brief Summary', value: 'BRIEF_SUMMARY' },
+  { label: 'Study Details', value: 'STUDY_DETAILS' },
+  { label: 'Interventions', value: 'INTERVENTIONS' },
+  { label: 'Collaborators', value: 'COLLABORATORS' },
+  { label: 'Investigators', value: 'INVESTIGATORS' },
+  { label: 'Conditions', value: 'CONDITIONS' },
+  { label: 'Keywords', value: 'KEYWORDS' },
+  { label: 'Arm Groups', value: 'ARM_GROUPS' },
+  { label: 'Eligibility Criteria', value: 'ELIGIBILITY_CRITERIA' },
+  { label: 'Primary Outcomes', value: 'PRIMARY_OUTCOMES' },
+  { label: 'Secondary Outcomes', value: 'SECONDARY_OUTCOMES' },
   ];
 
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [settingsOpen, setSettingsOpen] = useState(defaultOpen);
   const [filters, setFilters] = useState(OPTIONS.map(option => option.value));
- 
-  const handleToggleFilter = (value) => {
-    setFilters((prev) =>
-      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]
-    );
-  };
   const [isMobile, setIsMobile] = useState(false);
 
-  useEffect(() => {
-    const checkIfMobile = () => {
-      setIsMobile(window.innerWidth <= 768);
-    };
+  // Eligibility state
+  const [eligibilityCheckLoading, setEligibilityCheckLoading] = useState(false);
+  const [eligibilityCheckResults, setEligibilityCheckResults] = useState(null);
+  const [eligibilityCheckError, setEligibilityCheckError] = useState(null);
 
+  const handleToggleFilter = (value) => {
+    setFilters(prev => prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value]);
+  };
+
+  useEffect(() => {
+    const checkIfMobile = () => setIsMobile(window.innerWidth <= 768);
     checkIfMobile();
     window.addEventListener('resize', checkIfMobile);
-    
     return () => window.removeEventListener('resize', checkIfMobile);
   }, []);
 
   useEffect(() => {
     if (selectedResult) {
       setIsOpen(true);
+      
+      // Set appropriate filters based on result type
+      if (selectedResult.source === 'PM' || selectedResult.source === 'PMC') {
+        // For PM/PMC, use PM options
+        setFilters(PM_OPTIONS.map(option => option.value));
+      } else if (selectedResult.source === 'CTG') {
+        // For CTG, use CTG options
+        setFilters(CTG_OPTIONS.map(option => option.value));
+      }
     }
   }, [selectedResult]);
 
-  // Notify parent of sidebar state changes
+  const hasAnyCriteria = useMemo(
+    () => inclusionCriteria.length > 0 || exclusionCriteria.length > 0,
+    [inclusionCriteria, exclusionCriteria]
+  );
+
+  // eligibility checker
   useEffect(() => {
-    if (onToggle) {
-      onToggle(isOpen);
+    const hasCriteria = hasAnyCriteria;
+    if (!(selectedResult && hasCriteria && isOpen)) {
+      setEligibilityCheckResults(null);
+      setEligibilityCheckError(null);
+      setEligibilityCheckLoading(false);
+      return;
     }
+
+    const checkEligibility = async () => {
+      try {
+        setEligibilityCheckLoading(true);
+        setEligibilityCheckError(null);
+
+        let studyId, studyType, textContent;
+        let effective = selectedResult;
+
+        if (effective?.type === 'MERGED') {
+          if (effective.pm_data) effective = effective.pm_data;
+          else if (effective.ctg_data) effective = effective.ctg_data;
+        }
+
+        if (effective.source === 'PM' || effective.source === 'PMC') {
+          if (!effective.pmcid) {
+            setEligibilityCheckLoading(false);
+            return;
+          }
+          studyId = effective.pmcid;
+          studyType = 'PMC';
+          textContent = null; // backend fetches abstract
+        } else if (effective.source === 'CTG') {
+          const trialId = effective.nctid || effective.nctId || effective.id;
+          if (!trialId) {
+            setEligibilityCheckLoading(false);
+            return;
+          }
+          studyId = trialId;
+          studyType = 'CTG';
+
+          let structuredInfo = effective.structured_info;
+          if (!structuredInfo || Object.keys(structuredInfo).length === 0) {
+            try {
+              const ctgDetail = await getCtgDetail({ nctId: studyId });
+              structuredInfo = ctgDetail.structured_info;
+            } catch (fetchError) {
+              setEligibilityCheckError('Failed to fetch clinical trial details');
+              setEligibilityCheckLoading(false);
+              return;
+            }
+          }
+          textContent = extractCtgTextContent(structuredInfo);
+          if (!textContent?.trim()) {
+            setEligibilityCheckError('No content available for eligibility check');
+            setEligibilityCheckLoading(false);
+            return;
+          }
+        } else {
+          setEligibilityCheckLoading(false);
+          return;
+        }
+
+        const requestBody = {
+          study_id: studyId,
+          study_type: studyType,
+          inclusion_criteria: inclusionCriteria,
+          exclusion_criteria: exclusionCriteria,
+        };
+        if (textContent) requestBody.text_content = textContent;
+
+        const results = await checkSystematicReview(requestBody);
+        setEligibilityCheckResults(results);
+      } catch (error) {
+        setEligibilityCheckError(error.message || 'Failed to check eligibility criteria');
+      } finally {
+        setEligibilityCheckLoading(false);
+      }
+    };
+
+    checkEligibility();
+  }, [selectedResult, inclusionCriteria, exclusionCriteria, isOpen, hasAnyCriteria]);
+
+  // Notify parent
+  useEffect(() => {
+    if (onToggle) onToggle(isOpen);
   }, [isOpen, onToggle]);
 
-  // Don't render sidebar if not visible (no search results)
-  if (!isVisible) {
-    return null;
-  }
-
-  // Hide on mobile when other sidebar is open
-  if (isMobile && otherSidebarOpen && !isOpen) {
-    return null;
-  }
+  if (!isVisible) return null;
+  if (isMobile && otherSidebarOpen && !isOpen) return null;
 
   const toggleSidebar = () => {
-    setIsOpen((prev) => !prev);
+    setIsOpen(prev => !prev);
     if (settingsOpen) setSettingsOpen(false);
   };
-
   const toggleSettings = () => {
-    setSettingsOpen((prev) => !prev);
+    setSettingsOpen(prev => !prev);
     if (isOpen) setIsOpen(false);
   };
 
-  const renderSettings = () => {  
+  /** ---------- Settings UI ---------- */
+  const renderSettings = () => {
     const half = Math.ceil(PM_OPTIONS.length / 2);
     const leftColumn = PM_OPTIONS.slice(0, half);
     const rightColumn = PM_OPTIONS.slice(half);
@@ -155,918 +391,717 @@ const DetailSidebar = ({
     const leftColumnCTG = CTG_OPTIONS.slice(0, halfCTG);
     const rightColumnCTG = CTG_OPTIONS.slice(halfCTG);
 
-      return (
-        <div>
-          <div className="mb-4">
-              <div className="bg-custom-bg-soft rounded-xl p-4 border border-custom-border">
-                <h4 className="font-semibold mb-3 text-custom-text">CTG Result Filters</h4>
-                <div className="grid grid-cols-2 gap-x-8">
-                  {[leftColumnCTG, rightColumnCTG].map((column, colIndex) => (
-                    <div key={colIndex} className="space-y-2">
-                      {column.map(option => (
-                        <label
-                          key={option.value}
-                          className="flex items-center justify-between cursor-pointer"
-                        >
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              id={option.value}
-                              checked={filters.includes(option.value)}
-                              onChange={() => handleToggleFilter(option.value)}
-                              className="accent-custom-blue w-4 h-4 rounded border-gray-300 focus:ring-2 focus:ring-custom-blue"
-                            />
-                            <span className="text-sm text-custom-text">{option.label}</span>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
+    const onToggleFilter = (value) => handleToggleFilter(value);
 
-              <div className="bg-custom-bg-soft rounded-xl p-4 border mt-3 border-custom-border">
-                <h4 className="font-semibold mb-3 text-custom-text">PM Result Filters</h4>
-                <div className="grid grid-cols-2 gap-x-8">
-                  {[leftColumn, rightColumn].map((column, colIndex) => (
-                    <div key={colIndex} className="space-y-2">
-                      {column.map(option => (
-                        <label
-                          key={option.value}
-                          className="flex items-center justify-between cursor-pointer"
-                        >
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              id={option.value}
-                              checked={filters.includes(option.value)}
-                              onChange={() => handleToggleFilter(option.value)}
-                              className="accent-custom-blue w-4 h-4 rounded border-gray-300 focus:ring-2 focus:ring-custom-blue"
-                            />
-                            <span className="text-sm text-custom-text">{option.label}</span>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  ))}
-                </div>
+    return (
+      <div className="p-2">
+        <Section title="CTG Result Filters" dense>
+          <div className="grid grid-cols-2 gap-x-6">
+            {[leftColumnCTG, rightColumnCTG].map((column, colIndex) => (
+              <div key={colIndex} className="space-y-2">
+                {column.map((option) => (
+                  <CheckItem
+                    key={option.value}
+                    option={option}
+                    checked={filters.includes(option.value)}
+                    onToggle={onToggleFilter}
+                  />
+                ))}
               </div>
-              <button
-                onClick={toggleSettings}
-                className="px-3 py-1 mt-3 bg-custom-blue text-white rounded-lg font-semibold shadow-sm hover:bg-custom-blue-hover disabled:opacity-50 transition"
-              >
-                Apply Filters
-              </button>
-            
+            ))}
           </div>
+        </Section>
+
+        <Section title="PM Result Filters" dense>
+          <div className="grid grid-cols-2 gap-x-6">
+            {[leftColumn, rightColumn].map((column, colIndex) => (
+              <div key={colIndex} className="space-y-2">
+                {column.map((option) => (
+                  <CheckItem
+                    key={option.value}
+                    option={option}
+                    checked={filters.includes(option.value)}
+                    onToggle={onToggleFilter}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        <div className="flex justify-end">
+          <button
+            onClick={toggleSettings}
+            className="px-3 py-1 rounded-md bg-custom-blue text-white text-sm font-semibold hover:bg-custom-blue-hover transition"
+          >
+            Apply Filters
+          </button>
         </div>
-      )
-  }
+      </div>
+    );
+  };
 
+  /** ---------- Eligibility Section ---------- */
+  const renderEligibilitySection = () => {
+    if (!(inclusionCriteria.length || exclusionCriteria.length)) return null;
+    const hasIdentifier = selectedResult && (selectedResult.pmcid || selectedResult.nctid || selectedResult.id);
+    if (!hasIdentifier) return null;
 
+    return (
+      <Section title="Eligibility Check" dense>
+        {eligibilityCheckError ? (
+          <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2">
+            <p className="text-sm text-rose-700">
+              Failed to check eligibility: {eligibilityCheckError}
+            </p>
+          </div>
+        ) : (
+          <EligibilityCheckResults
+            results={eligibilityCheckResults}
+            isLoading={eligibilityCheckLoading}
+          />
+        )}
+      </Section>
+    );
+  };
+
+  /** ---------- Content (PM/PMC/CTG) ---------- */
   const renderContent = () => {
     if (!selectedResult) {
-      return <p className="text-sm text-gray-500">Select a result to view details.</p>;
+      return <p className="text-sm text-slate-500">Select a result to view details.</p>;
     }
-    
-    console.log('[DetailSidebar] selectedResult:', selectedResult);
-    console.log('[DetailSidebar] source:', selectedResult.source);
-    console.log('[DetailSidebar] structured_info:', selectedResult?.structured_info);
-    
-    // Handle PM or PMC source (including MERGED with PM focus)
+
+    // ---- PM or PMC ----
     if (selectedResult.source === 'PM' || selectedResult.source === 'PMC') {
-      if (selectedResult.type === 'MERGED') selectedResult = selectedResult.pm_data;
-      const abstract = selectedResult.abstract;
-      if (!abstract) {
-        return <p className="text-sm text-gray-500">No abstract available.</p>;
-      }
+      const pmItem = selectedResult.type === 'MERGED' ? selectedResult.pm_data : selectedResult;
+      const abstract = pmItem?.abstract;
+      const show = (key) => filters.includes(key);
+
       return (
         <div>
-
-          {/* Publication Info */}
-          { filters.includes('PUBLICATION_INFO') &&
-          <div className="mb-4">
-            <h4 className="font-semibold text-base mb-2">Publication Info</h4>
-            <div className="space-y-2 text-sm">
-              {selectedResult.journal && (
-                <div>
-                  <span className="font-medium">Journal:</span>
-                  <span className="ml-2">{selectedResult.journal}</span>
-                </div>
-              )}
-              {selectedResult.issue && (
-                <div>
-                  <span className="font-medium">Issue:</span>
-                  <span className="ml-2">{selectedResult.issue}</span>
-                </div>
-              )}
-              {selectedResult.volume && (
-                <div>
-                  <span className="font-medium">Volume:</span>
-                  <span className="ml-2">{selectedResult.volume}</span>
-                </div>
-              )}
-              {selectedResult.authors && selectedResult.authors.length > 0 && (
-                <div>
-                  <span className="font-medium">Authors:</span>
-                  <span className="ml-2">{selectedResult.authors.join(', ')}</span>
-                </div>
-              )}
-              {selectedResult.pubDate && (
-                <div>
-                  <span className="font-medium">Published:</span>
-                  <span className="ml-2">{new Date(selectedResult.pubDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
-                </div>
-              )}
-              {selectedResult.pmid && (
-                <div>
-                  <span className="font-medium">PMID:</span>
-                  <a
-                    href={`https://pubmed.ncbi.nlm.nih.gov/${selectedResult.pmid}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="ml-2 text-custom-blue hover:underline"
-                  >
-                    {selectedResult.pmid}
-                  </a>
-                </div>
-              )}
-              {selectedResult.pmcid && (
-                <div>
-                  <span className="font-medium">PMCID:</span>
-                  <a
-                    href={`https://pmc.ncbi.nlm.nih.gov/articles/${selectedResult.pmcid}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="ml-2 text-custom-blue hover:underline"
-                  >
-                    {selectedResult.pmcid}
-                  </a>
-                </div>
-              )}
-              {selectedResult.doi && (
-                <div>
-                  <span className="font-medium">DOI:</span>
-                  <a
-                    href={`https://doi.org/${selectedResult.doi}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="ml-2 text-custom-blue hover:underline"
-                  >
-                    {selectedResult.doi}
-                  </a>
-                </div>
-              )}
-              
-              {selectedResult.nctid && (
-                <div>
-                  <span className="font-medium">Related Trial:</span>
-                  <a
-                    href={`https://clinicaltrials.gov/study/${selectedResult.nctid}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="ml-2 text-custom-green hover:underline"
-                  >
-                    {selectedResult.nctid}
-                  </a>
-                </div>
-              )}
-            </div>
-          </div> }
-
-          
-          {/* Additional PM Metadata */}
-          {(selectedResult.ref_nctids || selectedResult.mesh_headings || selectedResult.keywords || selectedResult.publication_types || selectedResult.country) &&  filters.includes('ADDITIONAL_METADATA') && (
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Additional Metadata</h4>
-              <div className="space-y-2 text-sm">
-                {selectedResult.ref_nctids && selectedResult.ref_nctids.length > 0 && (
-                  <div>
-                    <span className="font-medium">Related Clinical Trials:</span>
-                    <div className="ml-2 mt-1">
-                      <span className="text-sm">
-                        {selectedResult.ref_nctids.map((nctid, idx) => (
-                          <span key={idx}>
-                            <a
-                              href={`https://clinicaltrials.gov/study/${nctid}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-custom-green hover:underline"
-                            >
-                              {nctid}
-                            </a>
-                            {idx < selectedResult.ref_nctids.length - 1 && <span className="mx-1">|</span>}
-                          </span>
-                        ))}
-                      </span>
-                    </div>
+          {filters.includes('ABSTRACT') && abstract && (
+            <Section title="Abstract">
+              <div className="space-y-3">
+                {Object.entries(abstract).map(([key, value]) => (
+                  <div key={key}>
+                    <div className="text-[13px] font-medium text-slate-700 mb-1">{key}</div>
+                    <div className="text-sm text-slate-800 leading-relaxed">{linkify(value)}</div>
                   </div>
-                )}
-
-                {/* Publication Types */}
-                {selectedResult.publication_types && selectedResult.publication_types.length > 0 && (
-                  <div>
-                    <span className="font-medium">Publication Types:</span>
-                    <div className="ml-2 mt-1 flex flex-wrap gap-1">
-                      {selectedResult.publication_types.map((type, idx) => (
-                        <span key={idx} className="bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded-full">
-                          {type}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Country */}
-                {selectedResult.country && (
-                  <div>
-                    <span className="font-medium">Country:</span>
-                    <span className="ml-2">{selectedResult.country}</span>
-                  </div>
-                )}
-
-                {/* MeSH Headings */}
-                {selectedResult.mesh_headings && selectedResult.mesh_headings.length > 0 && (
-                  <div>
-                    <span className="font-medium">MeSH Headings:</span>
-                    <div className="ml-2 mt-1 flex flex-wrap gap-1">
-                      {selectedResult.mesh_headings.slice(0, 10).map((mesh, idx) => (
-                        <span key={idx} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">
-                          {typeof mesh === 'string' ? mesh : mesh.descriptor || 'Unknown'}
-                        </span>
-                      ))}
-                      {selectedResult.mesh_headings.length > 10 && (
-                        <span className="text-xs text-gray-500 px-2 py-1">
-                          +{selectedResult.mesh_headings.length - 10} more
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Keywords */}
-                {selectedResult.keywords && selectedResult.keywords.length > 0 && (
-                  <div>
-                    <span className="font-medium">Keywords:</span>
-                    <div className="ml-2 mt-1 flex flex-wrap gap-1">
-                      {selectedResult.keywords.slice(0, 8).map((keyword, idx) => (
-                        <span key={idx} className="bg-gray-100 text-gray-700 text-xs px-2 py-1 rounded-full">
-                          {keyword}
-                        </span>
-                      ))}
-                      {selectedResult.keywords.length > 8 && (
-                        <span className="text-xs text-gray-500 px-2 py-1">
-                          +{selectedResult.keywords.length - 8} more
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* study type */}
-                {selectedResult.study_type && (
-                  <div className="pt-1">
-                    <span className="font-medium">Study Type:</span>
-                    <span className="ml-2">{selectedResult.study_type}</span>
-                  </div>
-                )}
-
-                {/* allocation */}
-                {selectedResult.design_allocation && (
-                  <div>
-                    <span className="font-medium">Design Allocation:</span>
-                    <span className="ml-2">{selectedResult.design_allocation}</span>
-                  </div>
-                )}
-
-                {/* observational model */}
-                {selectedResult.observational_model && (
-                  <div>
-                    <span className="font-medium">Observational Model:</span>
-                    <span className="ml-2">{selectedResult.observational_model}</span>
-                  </div>
-                )}
-
-                {/* phase */}
-                {selectedResult.phase && (
-                  <div>
-                    <span className="font-medium">Phase:</span>
-                    <span className="ml-2">{selectedResult.phase}</span>
-                  </div>
-                )}
-
-                {/* Grants */}
-                {selectedResult.grants && selectedResult.grants.length > 0 && (
-                  <div>
-                    <span className="font-medium">Grants:</span>
-                    <div className="ml-2 mt-1 flex flex-wrap gap-1">
-                      {selectedResult.grants.slice(0, 8).map((grant, idx) => (
-                        <span key={idx} className="bg-purple-100 text-purple-700 text-xs px-2 py-1 rounded-full">
-                          {grant.agency}, {grant.country}
-                        </span>
-                      ))}
-                      {selectedResult.grants.length > 5 && (
-                        <span className="text-xs text-gray-500 px-2 py-1">
-                          +{selectedResult.grants.length - 8} more
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-
+                ))}
               </div>
-            </div>
+            </Section>
           )}
 
-          
-          {filters.includes('ABSTRACT') && Object.entries(abstract).map(([key, value]) => (
-    
-            <div key={key} className="mb-4">
-              <span className="font-semibold block text-base mb-2">{key}</span>
-              <span className="block text-sm leading-relaxed">{linkify(value)}</span>
-            </div> 
-          ))}
-        </div>
-      );
-    } 
-    // Handle CTG source (including MERGED with CTG focus)
-    else if (selectedResult.source === 'CTG') {
-      const detailedInfo = selectedResult?.structured_info;
-      const hasDetailedInfo = detailedInfo && Object.keys(detailedInfo).length > 0;
-      
-      console.log('[DetailSidebar] CTG detailedInfo:', detailedInfo);
-      console.log('[DetailSidebar] hasDetailedInfo:', hasDetailedInfo);
-      const details = selectedResult.study_details
-      if (selectedResult.type === 'MERGED'){
-        selectedResult = selectedResult.ctg_data;
-      }
-      if (details) {
-        selectedResult.study_details = details;
-        selectedResult.primary_outcomes = selectedResult.study_details.outcomesModule?.primaryOutcomes?.map(outcome => outcome.measure);
-        selectedResult.secondary_outcomes = selectedResult.study_details.outcomesModule?.secondaryOutcomes?.map(outcome => outcome.measure);
-        selectedResult.groups = selectedResult.study_details.armsInterventionsModule?.armGroups?.map(group => `${group.type?.replace('_', ' ')}: ${group.label}`);
-      }
+          {show('PUBLICATION_INFO') && (
+            <Section title="Publication Info" dense>
+              <div className="space-y-1">
+                {(pmItem?.article_title || pmItem?.title) && (
+                  <MetaRow label="Title">
+                    {pmItem.article_title || pmItem.title}
+                  </MetaRow>
+                )}
+                {pmItem.journal && <MetaRow label="Journal">{pmItem.journal}</MetaRow>}
+                {pmItem.issue && <MetaRow label="Issue">{pmItem.issue}</MetaRow>}
+                {pmItem.volume && <MetaRow label="Volume">{pmItem.volume}</MetaRow>}
+                {pmItem.authors?.length > 0 && (
+                  <MetaRow label="Authors">{pmItem.authors.join(', ')}</MetaRow>
+                )}
+                {pmItem.pubDate && (
+                  <MetaRow label="Published">
+                    {new Date(pmItem.pubDate).toLocaleDateString('en-US', {
+                      year: 'numeric', month: 'short', day: 'numeric'
+                    })}
+                  </MetaRow>
+                )}
+                {pmItem.pmid && (
+                  <MetaRow label="PMID">
+                    <a
+                      href={`https://pubmed.ncbi.nlm.nih.gov/${pmItem.pmid}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-custom-blue hover:underline"
+                    >
+                      {pmItem.pmid}
+                    </a>
+                  </MetaRow>
+                )}
+                {pmItem.pmcid && (
+                  <MetaRow label="PMCID">
+                    <a
+                      href={`https://pmc.ncbi.nlm.nih.gov/articles/${pmItem.pmcid}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-custom-blue hover:underline"
+                    >
+                      {pmItem.pmcid}
+                    </a>
+                  </MetaRow>
+                )}
+                {pmItem.doi && (
+                  <MetaRow label="DOI">
+                    <a
+                      href={`https://doi.org/${pmItem.doi}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-custom-blue hover:underline"
+                    >
+                      {pmItem.doi}
+                    </a>
+                  </MetaRow>
+                )}
+                {pmItem.nctid && (
+                  <MetaRow label="Related Trial">
+                    <a
+                      href={`https://clinicaltrials.gov/study/${pmItem.nctid}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-custom-green hover:underline"
+                    >
+                      {pmItem.nctid}
+                    </a>
+                  </MetaRow>
+                )}
+              </div>
+            </Section>
+          )}
 
-      // Display basic info when structured_info is unavailable or empty
-      if (!hasDetailedInfo) {
-        return (
-          <div className="space-y-4">
-
-            {/* Study Details from basic data */}
-            { filters.includes('STUDY_DETAILS') && 
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Study Details</h4>
-              <div className="space-y-2 text-sm">
-                {selectedResult.status && (
-                  <div>
-                    <span className="font-medium">Status:</span>
-                    <span className="ml-2">{selectedResult.status}</span>
-                  </div>
-                )}
-                {selectedResult.phase && (
-                  <div>
-                    <span className="font-medium">Phase:</span>
-                    <span className="ml-2">{selectedResult.phase}</span>
-                  </div>
-                )}
-                {selectedResult.lead_sponsor && (
-                  <div>
-                    <span className="font-medium">Lead Sponsor:</span>
-                    <span className="ml-2">{selectedResult.lead_sponsor}</span>
-                  </div>
-                )}
-                
-                {/* Study Type */}
-                {selectedResult.study_type && (
-                  <div>
-                    <span className="font-medium">Study Type:</span>
-                    <span className="ml-2">{selectedResult.study_type}</span>
-                  </div>
-                )}
-
-                {/* Enhanced CTG metadata - Countries */}
-                {selectedResult.countries && selectedResult.countries.length > 0 && (
-                  <div>
-                    <span className="font-medium">Countries:</span>
-                    <span className="ml-2">
-                      {selectedResult.countries.slice(0, 3).join(', ')}
-                      {selectedResult.countries.length > 3 && ` +${selectedResult.countries.length - 3} more`}
-                    </span>
-                  </div>
-                )}
-
-                {/* Has Results indicator */}
-                {selectedResult.has_results !== undefined && (
-                  <div>
-                    <span className="font-medium">Has Results:</span>
-                    <span className={`ml-2 px-2 py-1 rounded-full text-xs ${
-                      selectedResult.has_results ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-                    }`}>
-                      {selectedResult.has_results ? 'Yes' : 'No'}
-                    </span>
-                  </div>
-                )}
-
-                {/* Enrollment information */}
-                {selectedResult.enrollment && (
-                  <div>
-                    <span className="font-medium">Enrollment:</span>
-                    <span className="ml-2">
-                      {selectedResult.enrollment}
-                      {selectedResult.enrollment_type && ` (${selectedResult.enrollment_type})`}
-                    </span>
-                  </div>
-                )}
-
-                {/* Related publications */}
-                {selectedResult.pmids && selectedResult.pmids.length > 0 && (
-                  <div>
-                    <span className="font-medium">Related Publications:</span>
-                    <div className="ml-2 mt-1">
-                      <span className="text-sm">
-                        {selectedResult.pmids.slice(0, 3).map((pmid, idx) => (
-                          <span key={idx}>
-                            <a
-                              href={`https://pubmed.ncbi.nlm.nih.gov/${pmid}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-custom-blue hover:underline"
-                            >
-                              {pmid}
-                            </a>
-                            {idx < Math.min(selectedResult.pmids.length, 3) - 1 && <span className="mx-1">|</span>}
-                          </span>
+          {(pmItem.ref_nctids ||
+            pmItem.mesh_headings ||
+            pmItem.keywords ||
+            pmItem.publication_types ||
+            pmItem.country) &&
+            filters.includes('ADDITIONAL_METADATA') && (
+              <Section title="Additional Metadata" dense>
+                <div className="space-y-2">
+                  {pmItem.ref_nctids?.length > 0 && (
+                    <MetaRow label="Related Trials">
+                      <div className="flex flex-wrap items-center gap-1">
+                        {pmItem.ref_nctids.map((nctid, idx) => (
+                          <a
+                            key={idx}
+                            href={`https://clinicaltrials.gov/study/${nctid}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-custom-green hover:underline text-sm"
+                          >
+                            {nctid}
+                          </a>
                         ))}
-                        {selectedResult.pmids.length > 3 && (
-                          <span className="text-custom-text-subtle"> +{selectedResult.pmids.length - 3} more</span>
+                      </div>
+                    </MetaRow>
+                  )}
+
+                  {pmItem.publication_types?.length > 0 && (
+                    <MetaRow label="Types">
+                      <div className="flex flex-wrap gap-1">
+                        {pmItem.publication_types.map((t, i) => (
+                          <Tag key={i}>{t}</Tag>
+                        ))}
+                      </div>
+                    </MetaRow>
+                  )}
+
+                  {pmItem.country && <MetaRow label="Country">{pmItem.country}</MetaRow>}
+
+                  {pmItem.mesh_headings?.length > 0 && (
+                    <MetaRow label="MeSH">
+                      <div className="flex flex-wrap gap-1">
+                        {pmItem.mesh_headings.slice(0, 10).map((mesh, i) => (
+                          <Tag key={i}>{typeof mesh === 'string' ? mesh : mesh.descriptor || 'Unknown'}</Tag>
+                        ))}
+                        {pmItem.mesh_headings.length > 10 && (
+                          <span className="text-xs text-slate-500">
+                            +{pmItem.mesh_headings.length - 10} more
+                          </span>
                         )}
-                      </span>
-                    </div>
-                  </div>
-                )}
-                
-                {/* Official Title if different from brief title */}
-                {selectedResult.official_title && selectedResult.official_title !== selectedResult.title && (
-                  <div>
-                    <span className="font-medium">Official Title:</span>
-                    <span className="ml-2 text-xs">{selectedResult.official_title}</span>
-                  </div>
-                )}
-                
-                {/* Study Duration */}
-                {(selectedResult.start_date || selectedResult.completion_date || selectedResult.primary_completion_date) && (
-                  <div>
-                    <span className="font-medium">Study Period:</span>
-                    <span className="ml-2">
-                      {selectedResult.start_date && new Date(selectedResult.start_date).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })}
-                      {selectedResult.start_date && (selectedResult.completion_date || selectedResult.primary_completion_date) && ' - '}
-                      {(selectedResult.completion_date || selectedResult.primary_completion_date) && 
-                        new Date(selectedResult.completion_date || selectedResult.primary_completion_date).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })
-                      }
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-            }
+                      </div>
+                    </MetaRow>
+                  )}
 
-            {/* Conditions from basic data */}
-            
-            { filters.includes('CONDITIONS') && selectedResult.conditions && selectedResult.conditions.length > 0 && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-base mb-2">Conditions</h4>
-                <div className="flex flex-wrap gap-1">
-                  {selectedResult.conditions.map((condition, idx) => (
-                    <span key={idx} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">
-                      {condition}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
+                  {pmItem.keywords?.length > 0 && (
+                    <MetaRow label="Keywords">
+                      <div className="flex flex-wrap gap-1">
+                        {pmItem.keywords.slice(0, 8).map((k, i) => <Tag key={i}>{k}</Tag>)}
+                        {pmItem.keywords.length > 8 && (
+                          <span className="text-xs text-slate-500">
+                            +{pmItem.keywords.length - 8} more
+                          </span>
+                        )}
+                      </div>
+                    </MetaRow>
+                  )}
 
-            {/* Interventions */}
-            
-            {filters.includes('INTERVENTIONS') && selectedResult.intervention_names && selectedResult.intervention_names.length > 0 && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-base mb-2">Interventions</h4>
-                <div className="space-y-1">
-                  {selectedResult.intervention_names.map((intervention, idx) => (
-                    <div key={idx} className="border-l-2 border-blue-200 pl-3">
-                      <p className="text-sm">{intervention}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            
+                  {pmItem.study_type && <MetaRow label="Study Type">{pmItem.study_type}</MetaRow>}
+                  {pmItem.design_allocation && (
+                    <MetaRow label="Design Allocation">{pmItem.design_allocation}</MetaRow>
+                  )}
+                  {pmItem.observational_model && (
+                    <MetaRow label="Observational Model">{pmItem.observational_model}</MetaRow>
+                  )}
+                  {pmItem.phase && <MetaRow label="Phase">{pmItem.phase}</MetaRow>}
 
-            {/* Collaborators */}
-            
-            {filters.includes('COLLABORATORS') &&  selectedResult.collaborators && selectedResult.collaborators.length > 0 && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-base mb-2">Collaborators</h4>
-                <div className="flex flex-wrap gap-1">
-                  {selectedResult.collaborators.map((collaborator, idx) => (
-                    <span key={idx} className="bg-gray-100 text-gray-700 text-xs px-2 py-1 rounded-full">
-                      {collaborator}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-
-            {/* Investigators */}
-            
-            { filters.includes('INVESTIGATORS') && selectedResult.study_details.contactsLocationsModule.overallOfficials && selectedResult.study_details.contactsLocationsModule.overallOfficials.length > 0 && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-base mb-2">Investigators</h4>
-                <div className="flex flex-wrap gap-1">
-                  {selectedResult.study_details.contactsLocationsModule.overallOfficials.map((collaborator, idx) => (
-                    <span key={idx} className="bg-purple-100 text-purple-700 text-xs px-2 py-1 rounded-full">
-                      {collaborator.name}, {collaborator.affiliation}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-            {/* Keywords from basic data */}
-            
-            { filters.includes('KEYWOWRDS') && selectedResult.keywords && selectedResult.keywords.length > 0 && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-base mb-2">Keywords</h4>
-                <div className="flex flex-wrap gap-1">
-                  {selectedResult.keywords.map((keyword, idx) => (
-                    <span key={idx} className="bg-gray-100 text-gray-700 text-xs px-2 py-1 rounded-full">
-                      {keyword}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-
-             {/* Arm Groups */}
-              
-            { filters.includes('ARM_GROUPS') && selectedResult.groups && selectedResult.groups.length > 0 && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-base mb-2">Arm Groups</h4>
-                <div className="space-y-1">
-                  {selectedResult.groups.map((group, idx) => (
-                    <div key={idx} className="border-l-2 border-purple-200 pl-3">
-                      <p className="text-sm">{group}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-
-            {/* Eligibility criteria */}
-            { filters.includes('ELIGIBILITY_CRITERIA') && 
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Eligibility Criteria</h4>
-              <div className="space-y-2 text-sm">
-                {selectedResult.study_details.eligibilityModule.stdAges && (
-                  <div>
-                    <span className="font-medium">Age Group(s):</span>
-                    <span className="ml-2">{selectedResult.study_details.eligibilityModule.stdAges.join(', ').replace('_', ' ')}</span>
-                  </div>
-                )}
-                {selectedResult.study_details.eligibilityModule.sex && (
-                  <div>
-                    <span className="font-medium">Sexes:</span>
-                    <span className="ml-2">{selectedResult.study_details.eligibilityModule.sex}</span>
-                  </div>
-                )}
-                {selectedResult.study_details.eligibilityModule.minimumAge && selectedResult.study_details.eligibilityModule.maximumAge && (
-                  <div>
-                    <span className="font-medium">Age Range:</span>
-                    <span className="ml-2">{selectedResult.study_details.eligibilityModule.minimumAge} to {selectedResult.study_details.eligibilityModule.maximumAge}</span>
-                  </div>
-                )}
-
-                {/* Enrollment information */}
-                {selectedResult.study_details.eligibilityModule.healthyVolunteers && (
-                  <div>
-                    <span className="font-medium">Accepts Healthy Volunteers?</span>
-                    <span className="ml-2">
-                      {selectedResult?.study_details?.eligibilityModule?.healthyVolunteers === true ? "Yes" : "No"}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-            } 
-
-            {/* Primary Outcomes from basic data */}
-            
-            { filters.includes('PRIMARY_OUTCOMES') && selectedResult.primary_outcomes && selectedResult.primary_outcomes.length > 0 && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-base mb-2">Primary Outcomes</h4>
-                <div className="space-y-1">
-                  {selectedResult.primary_outcomes.map((outcome, idx) => (
-                    <div key={idx} className="border-l-2 border-blue-200 pl-3">
-                      <p className="text-sm">{outcome}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-
-            {/* Secondary Outcomes from basic data */}
-            
-            { filters.includes('SECONDARY_OUTCOMES') && selectedResult.secondary_outcomes && selectedResult.secondary_outcomes.length > 0 && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-base mb-2">Secondary Outcomes</h4>
-                <div className="space-y-1">
-                  {selectedResult.secondary_outcomes.slice(0, 3).map((outcome, idx) => (
-                    <div key={idx} className="border-l-2 border-gray-200 pl-3">
-                      <p className="text-sm">{outcome}</p>
-                    </div>
-                  ))}
-                  {selectedResult.secondary_outcomes.length > 3 && (
-                    <p className="text-xs text-gray-500 italic">
-                      +{selectedResult.secondary_outcomes.length - 3} more secondary outcomes
-                    </p>
+                  {pmItem.grants?.length > 0 && (
+                    <MetaRow label="Grants">
+                      <div className="flex flex-wrap gap-1">
+                        {pmItem.grants.slice(0, 8).map((g, i) => (
+                          <Tag key={i}>
+                            {g.agency}, {g.country}
+                          </Tag>
+                        ))}
+                        {pmItem.grants.length > 8 && (
+                          <span className="text-xs text-slate-500">
+                            +{pmItem.grants.length - 8} more
+                          </span>
+                        )}
+                      </div>
+                    </MetaRow>
                   )}
                 </div>
-              </div>
+              </Section>
+            )}
+          {renderEligibilitySection()}
+        </div>
+      );
+    }
+
+    // ---- CTG ----
+    if (selectedResult.source === 'CTG') {
+      const mergedCTG = selectedResult.type === 'MERGED' ? selectedResult.ctg_data : selectedResult;
+      const detailedInfo = mergedCTG?.structured_info;
+      const hasDetailedInfo = detailedInfo && Object.keys(detailedInfo).length > 0;
+      const details = mergedCTG.study_details;
+
+      if (details) {
+        mergedCTG.study_details = details;
+        mergedCTG.primary_outcomes =
+          mergedCTG.study_details.outcomesModule?.primaryOutcomes?.map(o => o.measure);
+        mergedCTG.secondary_outcomes =
+          mergedCTG.study_details.outcomesModule?.secondaryOutcomes?.map(o => o.measure);
+        mergedCTG.groups =
+          mergedCTG.study_details.armsInterventionsModule?.armGroups?.map(
+            g => `${g.type?.replace('_', ' ')}: ${g.label}`
+          );
+      }
+
+      const show = (key) => filters.includes(key);
+
+      if (!hasDetailedInfo) {
+        return (
+          <div className="space-y-1">
+            {show('BRIEF_SUMMARY') && mergedCTG.brief_summary && (
+              <Section title="Brief Summary" dense>
+                <p className="text-sm text-slate-800 leading-relaxed">
+                  {linkify(mergedCTG.brief_summary)}
+                </p>
+              </Section>
             )}
 
-            {/* Brief Summary from basic data */}
-            
-            {filters.includes('BRIEF_SUMMARY') && selectedResult.brief_summary && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-base mb-2">Brief Summary</h4>
-                <p className="text-sm leading-relaxed">{linkify(selectedResult.brief_summary)}</p>
-              </div>
+            {show('STUDY_DETAILS') && (
+              <Section title="Basic Info" dense>
+                <div className="space-y-1">
+                  {(mergedCTG?.title || mergedCTG?.brief_title) && (
+                    <MetaRow label="Title">{mergedCTG.title || mergedCTG.brief_title}</MetaRow>
+                  )}
+                  {mergedCTG.countries?.length > 0 && (
+                    <MetaRow label="Countries">
+                      {mergedCTG.countries.slice(0, 3).join(', ')}
+                      {mergedCTG.countries.length > 3 && ` +${mergedCTG.countries.length - 3} more`}
+                    </MetaRow>
+                  )}
+                  {mergedCTG.lead_sponsor && (
+                    <MetaRow label="Lead Sponsor">{mergedCTG.lead_sponsor}</MetaRow>
+                  )}
+                  {(mergedCTG.start_date || mergedCTG.completion_date || mergedCTG.primary_completion_date) && (
+                    <MetaRow label="Study Period">
+                      {mergedCTG.start_date && new Date(mergedCTG.start_date).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })}
+                      {mergedCTG.start_date && (mergedCTG.completion_date || mergedCTG.primary_completion_date) && ' - '}
+                      {(mergedCTG.completion_date || mergedCTG.primary_completion_date) && new Date(mergedCTG.completion_date || mergedCTG.primary_completion_date).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })}
+                    </MetaRow>
+                  )}
+                  {mergedCTG.status && <MetaRow label="Status">{mergedCTG.status}</MetaRow>}
+                  {mergedCTG.has_results !== undefined && (
+                    <MetaRow label="Has Results">
+                      <span className="text-sm font-medium text-slate-800">
+                        {mergedCTG.has_results ? 'Yes' : 'No'}
+                      </span>
+                    </MetaRow>
+                  )}
+                  {(mergedCTG.nctid || mergedCTG.id) && (
+                    <MetaRow label="NCTID">
+                      <a
+                        href={`https://clinicaltrials.gov/study/${mergedCTG.nctid || mergedCTG.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-custom-green hover:underline"
+                      >
+                        {mergedCTG.nctid || mergedCTG.id}
+                      </a>
+                    </MetaRow>
+                  )}
+                  {mergedCTG.pmids?.length > 0 && (
+                    <MetaRow label="Related PMIDs">
+                      <div className="flex flex-wrap gap-1">
+                        {mergedCTG.pmids.slice(0, 3).map((pmid, idx) => (
+                          <a
+                            key={idx}
+                            href={`https://pubmed.ncbi.nlm.nih.gov/${pmid}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-custom-blue hover:underline text-sm"
+                          >
+                            {pmid}
+                          </a>
+                        ))}
+                        {mergedCTG.pmids.length > 3 && (
+                          <span className="text-xs text-slate-500">+{mergedCTG.pmids.length - 3} more</span>
+                        )}
+                      </div>
+                    </MetaRow>
+                  )}
+                </div>
+              </Section>
             )}
+
             
+
+            <Section title="Study Design" dense>
+              <div className="space-y-1">
+                {mergedCTG.study_type && show('STUDY_DETAILS') && (
+                  <MetaRow label="Study Type">{mergedCTG.study_type}</MetaRow>
+                )}
+                {mergedCTG.phase && show('STUDY_DETAILS') && (
+                  <MetaRow label="Phase">{mergedCTG.phase}</MetaRow>
+                )}
+                {mergedCTG.enrollment && (
+                  <MetaRow label="Enrollment">
+                    {mergedCTG.enrollment}
+                    {mergedCTG.enrollment_type && ` (${mergedCTG.enrollment_type})`}
+                  </MetaRow>
+                )}
+                {show('KEYWORDS') && mergedCTG.keywords?.length > 0 && (
+                  <MetaRow label="Keywords">
+                    <div className="flex flex-wrap gap-1">
+                      {mergedCTG.keywords.map((k, i) => <Tag key={i}>{k}</Tag>)}
+                    </div>
+                  </MetaRow>
+                )}
+                {show('CONDITIONS') && mergedCTG.conditions?.length > 0 && (
+                  <MetaRow label="Conditions">
+                    <div className="flex flex-wrap gap-1">
+                      {mergedCTG.conditions.map((c, i) => <Tag key={i}>{c}</Tag>)}
+                    </div>
+                  </MetaRow>
+                )}
+                {show('INTERVENTIONS') && mergedCTG.intervention_names?.length > 0 && (
+                  <MetaRow label="Interventions">
+                    <div className="flex flex-wrap gap-1">
+                      {mergedCTG.intervention_names.map((intv, i) => <Tag key={i}>{intv}</Tag>)}
+                    </div>
+                  </MetaRow>
+                )}
+                {show('ARM_GROUPS') && mergedCTG.groups?.length > 0 && (
+                  <MetaRow label="Arm Groups">
+                    <div className="flex flex-wrap gap-1">
+                      {mergedCTG.groups.map((g, i) => <Tag key={i}>{g}</Tag>)}
+                    </div>
+                  </MetaRow>
+                )}
+              </div>
+            </Section>
+
+            
+
+            {show('ELIGIBILITY_CRITERIA') && (
+              <Section title="Eligibility Criteria" dense>
+                <div className="space-y-1">
+                  {mergedCTG.study_details?.eligibilityModule?.stdAges && (
+                    <MetaRow label="Age Groups">
+                      {mergedCTG.study_details.eligibilityModule.stdAges.join(', ').replace('_', ' ')}
+                    </MetaRow>
+                  )}
+                  {mergedCTG.study_details?.eligibilityModule?.sex && (
+                    <MetaRow label="Sexes">
+                      {mergedCTG.study_details.eligibilityModule.sex}
+                    </MetaRow>
+                  )}
+                  {mergedCTG.study_details?.eligibilityModule?.minimumAge &&
+                    mergedCTG.study_details?.eligibilityModule?.maximumAge && (
+                      <MetaRow label="Age Range">
+                        {mergedCTG.study_details.eligibilityModule.minimumAge} to{' '}
+                        {mergedCTG.study_details.eligibilityModule.maximumAge}
+                      </MetaRow>
+                    )}
+                  {'healthyVolunteers' in (mergedCTG.study_details?.eligibilityModule || {}) && (
+                    <MetaRow label="Healthy Volunteers">
+                      {mergedCTG.study_details.eligibilityModule.healthyVolunteers ? 'Yes' : 'No'}
+                    </MetaRow>
+                  )}
+                </div>
+              </Section>
+            )}
+
+            {show('PRIMARY_OUTCOMES') && mergedCTG.primary_outcomes?.length > 0 && (
+              <Section title="Primary Outcomes" dense>
+              
+                <ul className="list-disc space-y-1 pl-3">
+                  {mergedCTG.primary_outcomes.map((o, i) => (
+                    <li key={i} className="text-sm text-slate-800">{o}</li>
+                  ))}
+                </ul>
+                
+              </Section>
+            )}
+
+            {show('SECONDARY_OUTCOMES') && mergedCTG.secondary_outcomes?.length > 0 && (
+              <Section title="Secondary Outcomes" dense>
+                <ul className="list-disc space-y-1 pl-3">
+                  {mergedCTG.secondary_outcomes.slice(0, 3).map((o, i) => (
+                    <li key={i} className="text-sm text-slate-800">{o}</li>
+                  ))}
+                </ul>
+                {mergedCTG.secondary_outcomes.length > 3 && (
+                  <p className="text-xs text-slate-500 italic mt-1">
+                    +{mergedCTG.secondary_outcomes.length - 3} more secondary outcomes
+                  </p>
+                )}
+              </Section>
+            )}
+
+            {(show('COLLABORATORS') || show('INVESTIGATORS')) && (
+              <Section title="Additional Metadata" dense>
+                <div className="space-y-1">
+                  {show('INVESTIGATORS') &&
+                    mergedCTG.study_details?.contactsLocationsModule?.overallOfficials?.length > 0 && (
+                      <MetaRow label="Investigators">
+                        <div className="flex flex-wrap gap-1">
+                          {mergedCTG.study_details.contactsLocationsModule.overallOfficials.map((o, i) => (
+                            <Tag key={i}>{o.name}, {o.affiliation}</Tag>
+                          ))}
+                        </div>
+                      </MetaRow>
+                    )}
+                  {show('COLLABORATORS') && mergedCTG.collaborators?.length > 0 && (
+                    <MetaRow label="Collaborators">
+                      <div className="flex flex-wrap gap-1">
+                        {mergedCTG.collaborators.map((c, i) => <Tag key={i}>{c}</Tag>)}
+                      </div>
+                    </MetaRow>
+                  )}
+                </div>
+              </Section>
+            )}
+
+            {renderEligibilitySection()}
           </div>
         );
       }
 
-      // Display detailed info when structured_info is available
+      // Detailed info
+      const d = detailedInfo;
       return (
         <div className="space-y-4">
-          {/* Brief Summary */}
-          {detailedInfo.briefSummary && (
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Brief Summary</h4>
-              <p className="text-sm leading-relaxed">{linkify(detailedInfo.briefSummary)}</p>
-            </div>
-          )}
-
-          {/* Study Details */}
-          <div className="mb-4">
-            <h4 className="font-semibold text-base mb-2">Study Details</h4>
-            <div className="space-y-2 text-sm">
-              {detailedInfo.overallStatus && (
-                <div>
-                  <span className="font-medium">Status:</span>
-                  <span className="ml-2">{detailedInfo.overallStatus}</span>
-                </div>
+          
+          {/* Study Info */}
+          <Section title="Study Info" dense>
+            <div>
+              {(d.briefTitle || d.officialTitle || mergedCTG?.title || mergedCTG?.brief_title) && (
+                <MetaRow label="Title">{d.briefTitle || d.officialTitle || mergedCTG?.title || mergedCTG?.brief_title}</MetaRow>
               )}
-              {detailedInfo.phase && (
-                <div>
-                  <span className="font-medium">Phase:</span>
-                  <span className="ml-2">{detailedInfo.phase}</span>
-                </div>
+              {d.locations?.length > 0 && (
+                <MetaRow label="Countries">
+                  {Array.from(new Set(d.locations.map(l => l.country))).slice(0, 3).join(', ')}
+                  {Array.from(new Set(d.locations.map(l => l.country))).length > 3 && (
+                    <> +{Array.from(new Set(d.locations.map(l => l.country))).length - 3} more</>
+                  )}
+                </MetaRow>
               )}
-              {detailedInfo.leadSponsor && (
-                <div>
-                  <span className="font-medium">Lead Sponsor:</span>
-                  <span className="ml-2">{detailedInfo.leadSponsor}</span>
-                </div>
+              {d.leadSponsor && <MetaRow label="Lead Sponsor">{d.leadSponsor}</MetaRow>}
+              {(d.startDate || d.completionDate || d.primaryCompletionDate) && (
+                <MetaRow label="Study Period">
+                  {d.startDate && new Date(d.startDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })}
+                  {d.startDate && (d.completionDate || d.primaryCompletionDate) && ' - '}
+                  {(d.completionDate || d.primaryCompletionDate) && new Date(d.completionDate || d.primaryCompletionDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })}
+                </MetaRow>
               )}
-              
-              {/* Enhanced Study Design Information */}
-              {detailedInfo.studyType && (
-                <div>
-                  <span className="font-medium">Study Type:</span>
-                  <span className="ml-2">{detailedInfo.studyType}</span>
-                </div>
-              )}
-              
-              {detailedInfo.primaryPurpose && (
-                <div>
-                  <span className="font-medium">Primary Purpose:</span>
-                  <span className="ml-2">{detailedInfo.primaryPurpose}</span>
-                </div>
-              )}
-              
-              {detailedInfo.allocation && (
-                <div>
-                  <span className="font-medium">Allocation:</span>
-                  <span className="ml-2">{detailedInfo.allocation}</span>
-                </div>
-              )}
-              
-              {detailedInfo.interventionModel && (
-                <div>
-                  <span className="font-medium">Intervention Model:</span>
-                  <span className="ml-2">{detailedInfo.interventionModel}</span>
-                </div>
-              )}
-              
-              {detailedInfo.masking && (
-                <div>
-                  <span className="font-medium">Masking:</span>
-                  <span className="ml-2">{detailedInfo.masking}</span>
-                </div>
-              )}
-              
-              {/* Enrollment Information */}
-              {detailedInfo.enrollmentCount && (
-                <div>
-                  <span className="font-medium">Enrollment:</span>
-                  <span className="ml-2">{detailedInfo.enrollmentCount}{detailedInfo.enrollmentType ? ` (${detailedInfo.enrollmentType})` : ''}</span>
-                </div>
-              )}
-              
-              {/* Eligibility Criteria Summary */}
-              {(detailedInfo.eligibleSex || detailedInfo.minimumAge || detailedInfo.maximumAge) && (
-                <div>
-                  <span className="font-medium">Eligibility:</span>
-                  <span className="ml-2">
-                    {detailedInfo.eligibleSex && `${detailedInfo.eligibleSex}`}
-                    {detailedInfo.minimumAge && `, Ages ${detailedInfo.minimumAge}`}
-                    {detailedInfo.maximumAge && ` to ${detailedInfo.maximumAge}`}
+              {d.overallStatus && <MetaRow label="Status">{d.overallStatus}</MetaRow>}
+              {(mergedCTG?.has_results !== undefined || d.hasResults !== undefined) && (
+                <MetaRow label="Has Results">
+                  <span className="text-sm font-medium text-slate-800">
+                    {(mergedCTG?.has_results ?? d.hasResults) ? 'Yes' : 'No'}
                   </span>
-                </div>
+                </MetaRow>
               )}
-              
-              {/* Study Duration */}
-              {(detailedInfo.startDate || detailedInfo.completionDate || detailedInfo.primaryCompletionDate) && (
-                <div>
-                  <span className="font-medium">Study Period:</span>
-                  <span className="ml-2">
-                    {detailedInfo.startDate && new Date(detailedInfo.startDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })}
-                    {detailedInfo.startDate && (detailedInfo.completionDate || detailedInfo.primaryCompletionDate) && ' - '}
-                    {(detailedInfo.completionDate || detailedInfo.primaryCompletionDate) && 
-                      new Date(detailedInfo.completionDate || detailedInfo.primaryCompletionDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })
-                    }
-                  </span>
-                </div>
+              {(d.nctId || mergedCTG.nctid || mergedCTG.id) && (
+                <MetaRow label="NCTID">
+                  <a
+                    href={`https://clinicaltrials.gov/study/${d.nctId || mergedCTG.nctid || mergedCTG.id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-custom-green hover:underline"
+                  >
+                    {d.nctId || mergedCTG.nctid || mergedCTG.id}
+                  </a>
+                </MetaRow>
               )}
-              
-              {/* Locations */}
-              {detailedInfo.locations && detailedInfo.locations.length > 0 && (
-                <div>
-                  <span className="font-medium">Locations:</span>
-                  <div className="ml-2 mt-1">
-                    {detailedInfo.locations.slice(0, 3).map((location, idx) => (
-                      <div key={idx} className="text-xs bg-gray-100 px-2 py-1 rounded mb-1 inline-block mr-1">
-                        {location.city && `${location.city}, `}{location.state && `${location.state}, `}{location.country}
-                      </div>
+              {mergedCTG.pmids?.length > 0 && (
+                <MetaRow label="Related PMIDs">
+                  <div className="flex flex-wrap gap-1">
+                    {mergedCTG.pmids.slice(0, 3).map((pmid, idx) => (
+                      <a
+                        key={idx}
+                        href={`https://pubmed.ncbi.nlm.nih.gov/${pmid}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-custom-blue hover:underline text-sm"
+                      >
+                        {pmid}
+                      </a>
                     ))}
-                    {detailedInfo.locations.length > 3 && (
-                      <span className="text-xs text-gray-500">+{detailedInfo.locations.length - 3} more locations</span>
+                    {mergedCTG.pmids.length > 3 && (
+                      <span className="text-xs text-slate-500">+{mergedCTG.pmids.length - 3} more</span>
                     )}
                   </div>
-                </div>
+                </MetaRow>
               )}
             </div>
-          </div>
+          </Section>
 
-          {/* Conditions */}
-          {detailedInfo.conditions && detailedInfo.conditions.length > 0 && (
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Conditions</h4>
-              <div className="flex flex-wrap gap-1">
-                {detailedInfo.conditions.map((condition, idx) => (
-                  <span key={idx} className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">
-                    {condition}
-                  </span>
-                ))}
-              </div>
-            </div>
+          {d.briefSummary && (
+            <Section title="Brief Summary" dense>
+              <p className="text-sm text-slate-800 leading-relaxed">{linkify(d.briefSummary)}</p>
+            </Section>
           )}
 
-          {/* Interventions from detailed info */}
-          {detailedInfo.interventions && detailedInfo.interventions.length > 0 && (
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Interventions</h4>
-              <div className="space-y-2">
-                {detailedInfo.interventions.map((intervention, idx) => (
-                  <div key={idx} className="border-l-2 border-blue-200 pl-3">
-                    <p className="text-sm font-medium">{intervention.name}</p>
-                    {intervention.description && (
-                      <p className="text-xs text-gray-600 mt-1">{intervention.description}</p>
-                    )}
+          {/* Study Design */}
+          <Section title="Study Design" dense>
+            <div className="space-y-1">
+              {d.studyType && <MetaRow label="Study Type">{d.studyType}</MetaRow>}
+              {d.phase && <MetaRow label="Phase">{d.phase}</MetaRow>}
+              {d.enrollmentCount && (
+                <MetaRow label="Enrollment">
+                  {d.enrollmentCount}{d.enrollmentType ? ` (${d.enrollmentType})` : ''}
+                </MetaRow>
+              )}
+              {d.keywords?.length > 0 && (
+                <MetaRow label="Keywords">
+                  <div className="flex flex-wrap gap-1">
+                    {d.keywords.map((k, i) => <Tag key={i}>{k}</Tag>)}
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Collaborators from detailed info */}
-          {detailedInfo.collaborators && detailedInfo.collaborators.length > 0 && (
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Collaborators</h4>
-              <div className="flex flex-wrap gap-1">
-                {detailedInfo.collaborators.map((collaborator, idx) => (
-                  <span key={idx} className="bg-gray-100 text-gray-700 text-xs px-2 py-1 rounded-full">
-                    {collaborator}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Keywords */}
-          {detailedInfo.keywords && detailedInfo.keywords.length > 0 && (
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Keywords</h4>
-              <div className="flex flex-wrap gap-1">
-                {detailedInfo.keywords.map((keyword, idx) => (
-                  <span key={idx} className="bg-gray-100 text-gray-700 text-xs px-2 py-1 rounded-full">
-                    {keyword}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Primary Outcomes */}
-          {detailedInfo.primaryOutcomes && detailedInfo.primaryOutcomes.length > 0 && (
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Primary Outcomes</h4>
-              <div className="space-y-2">
-                {detailedInfo.primaryOutcomes.map((outcome, idx) => (
-                  <div key={idx} className="border-l-2 border-blue-200 pl-3">
-                    {outcome.measure && (
-                      <p className="text-sm font-medium mb-1">{outcome.measure}</p>
-                    )}
-                    {outcome.description && (
-                      <p className="text-xs text-gray-600">{linkify(outcome.description)}</p>
-                    )}
+                </MetaRow>
+              )}
+              {d.conditions?.length > 0 && (
+                <MetaRow label="Conditions">
+                  <div className="flex flex-wrap gap-1">
+                    {d.conditions.map((c, i) => <Tag key={i}>{c}</Tag>)}
                   </div>
-                ))}
-              </div>
+                </MetaRow>
+              )}
+              {d.interventions?.length > 0 && (
+                <MetaRow label="Interventions">
+                  <div className="flex flex-wrap gap-1">
+                    {d.interventions.map((intv, i) => <Tag key={i}>{intv.name || intv}</Tag>)}
+                  </div>
+                </MetaRow>
+              )}
+              {mergedCTG.study_details?.armsInterventionsModule?.armGroups?.length > 0 && (
+                <MetaRow label="Arm Groups">
+                  <div className="flex flex-wrap gap-1">
+                    {mergedCTG.study_details.armsInterventionsModule.armGroups.map((g, i) => (
+                      <Tag key={i}>{`${(g.type || '').replace('_', ' ')}: ${g.label}`}</Tag>
+                    ))}
+                  </div>
+                </MetaRow>
+              )}
             </div>
+          </Section>
+
+          
+
+          {d.primaryOutcomes?.length > 0 && (
+            <Section title="Primary Outcomes" dense>
+              <ul className="list-disc space-y-1 pl-3">
+                {d.primaryOutcomes.map((o, i) => (
+                  <li key={i} className="text-sm text-slate-800">
+                    {o.measure}
+                    {o.description && (
+                      <div className="text-xs text-slate-600 mt-0.5">{linkify(o.description)}</div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </Section>
           )}
 
-          {/* Secondary Outcomes */}
-          {detailedInfo.secondaryOutcomes && detailedInfo.secondaryOutcomes.length > 0 && (
-            <div className="mb-4">
-              <h4 className="font-semibold text-base mb-2">Secondary Outcomes</h4>
-              <div className="space-y-2">
-                {detailedInfo.secondaryOutcomes.slice(0, 3).map((outcome, idx) => (
-                  <div key={idx} className="border-l-2 border-gray-200 pl-3">
-                    {outcome.measure && (
-                      <p className="text-sm font-medium mb-1">{outcome.measure}</p>
+          {d.secondaryOutcomes?.length > 0 && (
+            <Section title="Secondary Outcomes" dense>
+              <ul className="list-disc space-y-1 pl-3">
+                {d.secondaryOutcomes.slice(0, 3).map((o, i) => (
+                  <li key={i} className="text-sm text-slate-800">
+                    {o.measure}
+                    {o.description && (
+                      <div className="text-xs text-slate-600 mt-0.5">{linkify(o.description)}</div>
                     )}
-                    {outcome.description && (
-                      <p className="text-xs text-gray-600">{linkify(outcome.description)}</p>
-                    )}
-                  </div>
+                  </li>
                 ))}
-                {detailedInfo.secondaryOutcomes.length > 3 && (
-                  <p className="text-xs text-gray-500 italic">
-                    +{detailedInfo.secondaryOutcomes.length - 3} more secondary outcomes
-                  </p>
+              </ul>
+              {d.secondaryOutcomes.length > 3 && (
+                <p className="text-xs text-slate-500 italic mt-1">
+                  +{d.secondaryOutcomes.length - 3} more secondary outcomes
+                </p>
+              )}
+            </Section>
+          )}
+
+          {/* Additional Metadata */}
+          {(d.collaborators?.length > 0 || mergedCTG.study_details?.contactsLocationsModule?.overallOfficials?.length > 0) && (
+            <Section title="Additional Metadata" dense>
+              <div className="space-y-1">
+                {mergedCTG.study_details?.contactsLocationsModule?.overallOfficials?.length > 0 && (
+                  <MetaRow label="Investigators">
+                    <div className="flex flex-wrap gap-1">
+                      {mergedCTG.study_details.contactsLocationsModule.overallOfficials.map((o, i) => (
+                        <Tag key={i}>{o.name}, {o.affiliation}</Tag>
+                      ))}
+                    </div>
+                  </MetaRow>
+                )}
+                {d.collaborators?.length > 0 && (
+                  <MetaRow label="Collaborators">
+                    <div className="flex flex-wrap gap-1">
+                      {d.collaborators.map((c, i) => <Tag key={i}>{c}</Tag>)}
+                    </div>
+                  </MetaRow>
                 )}
               </div>
-            </div>
+            </Section>
           )}
 
-          {/* Study Link */}
-          <div className="mt-4 pt-4 border-t border-gray-200">
+          <div className="pt-1">
             <a
-              href={`https://clinicaltrials.gov/study/${detailedInfo.nctId || selectedResult.nctid || selectedResult.id}`}
+              href={`https://clinicaltrials.gov/study/${d.nctId || mergedCTG.nctid || mergedCTG.id}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 hover:underline text-sm font-medium"
+              className="text-custom-blue hover:underline text-sm font-medium"
             >
               View full study on ClinicalTrials.gov →
             </a>
+            <SoftNote>✓ Enhanced details loaded from ClinicalTrials.gov API</SoftNote>
           </div>
 
-          {/* Enhanced info indicator */}
-          <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded">
-            <p className="text-xs text-green-700">
-              ✓ Enhanced details loaded from ClinicalTrials.gov API
-            </p>
-          </div>
+          {renderEligibilitySection()}
         </div>
       );
-    } else {
-      return <p className="text-sm text-gray-500">Details not available.</p>;
     }
+
+    return <p className="text-sm text-slate-500">Details not available.</p>;
   };
 
   const getTitle = () => {
     if (!selectedResult || !isOpen) return null;
-
     if ((selectedResult.source === 'PM' || selectedResult.source === 'PMC') && selectedResult.abstract) {
-      return 'Abstract';
+      return 'PubMed Preview';
     } else if (selectedResult.source === 'CTG') {
-      return 'Study Details';
+      return 'ClinicalTrials.gov Preview';
     }
     return null;
   };
@@ -1075,48 +1110,41 @@ const DetailSidebar = ({
 
   return (
     <div
-      className={`bg-white shadow-lg border-l border-gray-200 transition-all duration-300 ease-in-out ${isOpen ? 'rounded-r-2xl' : 'rounded-l-lg'} flex-shrink-0 ${
+      className={`bg-white shadow-lg border-l border-slate-200 transition-all duration-300 ease-in-out ${
+        isOpen ? 'rounded-r-2xl' : 'rounded-l-lg'
+      } flex-shrink-0 ${
         isMobile ? (isOpen ? 'fixed right-0 top-0 z-50' : 'fixed right-0 top-16 z-50') : 'sticky top-0'
       }`}
       style={{
-        width: isOpen || settingsOpen ? 
-          (isMobile ? '100%' : expandedWidth) : 
-          collapsedWidth,
-        height: isMobile && !isOpen ? 'auto' : 
-          isMobile && isOpen ? '100vh' : 
-          'calc(100vh - 64px)'
+        width: isOpen || settingsOpen ? (isMobile ? '100%' : expandedWidth) : collapsedWidth,
+        height: isMobile && !isOpen ? 'auto' : isMobile && isOpen ? '100vh' : 'calc(100vh - 64px)'
       }}
     >
-      {/* Header Section */}
-      <div className={`flex items-center ${isOpen ? 'justify-between' : 'justify-center'} p-2 ${settingsOpen ? 'border-b-0' : 'border-b'} border-gray-200`}>
-        {isOpen && title && (
-          <h3 className="font-bold text-lg ml-2">{title}</h3>
-        )}
+      {/* Header */}
+      <div className={`flex items-center ${isOpen ? 'justify-between' : 'justify-center'} p-2 border-b border-slate-200`}>
+        {isOpen && title && <h3 className="font-semibold text-slate-900 text-base ml-2">{title}</h3>}
         {isOpen && !title && <div />}
-
         {!settingsOpen && (
-        <button
-          type="button"
-          aria-controls="sidebar-drawer"
-          aria-expanded={isOpen}
-          className="p-1 text-primary-44 hover:text-primary-100 duration-short ease-curve-a cursor-pointer transition-colors"
-          aria-label="Toggle navigation sidebar"
-          onClick={toggleSidebar}
-        >
-          {isOpen ? <PanelLeft size={18} /> : <PanelRight size={18} />}
-        </button>
+          <button
+            type="button"
+            aria-controls="sidebar-drawer"
+            aria-expanded={isOpen}
+            className="p-1 text-slate-600 hover:text-slate-900 transition-colors"
+            aria-label="Toggle details sidebar"
+            onClick={toggleSidebar}
+          >
+            {isOpen ? <PanelLeft size={18} /> : <PanelRight size={18} />}
+          </button>
         )}
       </div>
 
-      {/* Footer Section */}
-      <div className={`flex items-center ${settingsOpen ? 'justify-between' : 'justify-center'} p-2 ${isOpen ? 'border-b-0' : 'border-b'}  border-gray-200`}>
-        {settingsOpen && (
-          <h3 className="font-bold text-lg ml-2">Study Detail Settings</h3>
-        )}
+      {/* Footer / Settings Bar */}
+      <div className={`flex items-center ${settingsOpen ? 'justify-between border-b border-slate-200' : 'justify-center'} p-2`}>
+        {settingsOpen && <h3 className="font-semibold text-slate-900 text-base ml-2">Study Detail Settings</h3>}
         {settingsOpen && <div />}
         {!isOpen && (
           <button
-            className="p-1 text-primary-44 hover:text-primary-100 duration-short ease-curve-a cursor-pointer transition-colors"
+            className="p-1 text-slate-600 hover:text-slate-900 transition-colors"
             type="button"
             aria-label="Open settings"
             aria-expanded={isOpen}
@@ -1127,20 +1155,22 @@ const DetailSidebar = ({
         )}
       </div>
 
+      {/* Body */}
       {isOpen && (
-        <div 
-          className="px-4 py-2 text-sm text-gray-700" 
-          style={{ 
-            height: isMobile ? 'calc(100vh - 41px)' : 'calc(100vh - 64px - 41px)', 
-            overflowY: 'auto' 
+        <div
+          className="px-4 py-2 text-sm text-slate-8 00"
+          style={{
+            height: isMobile ? 'calc(100vh - 41px)' : 'calc(100vh - 64px - 41px)',
+            overflowY: 'auto'
           }}
         >
           {renderContent()}
         </div>
       )}
 
+      {/* Settings drawer */}
       {settingsOpen && (
-        <div className="px-4 py-2 text-sm text-gray-700 " style={{ height: 'calc(100vh - 41px)' }}>
+        <div className="px-4 py-2 text-sm text-slate-800" style={{ height: 'calc(100vh - 41px)', overflowY: 'auto' }}>
           {renderSettings()}
         </div>
       )}
@@ -1156,6 +1186,8 @@ DetailSidebar.propTypes = {
   collapsedWidth: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
   onToggle: PropTypes.func,
   otherSidebarOpen: PropTypes.bool,
+  inclusionCriteria: PropTypes.arrayOf(PropTypes.string),
+  exclusionCriteria: PropTypes.arrayOf(PropTypes.string),
 };
 
 export default DetailSidebar;

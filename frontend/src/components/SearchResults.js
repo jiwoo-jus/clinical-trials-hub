@@ -2,22 +2,17 @@ import { Building2, Calendar, ChevronDown, ToggleLeft, ToggleRight, Clock, Earth
 import PropTypes from 'prop-types';
 import React, { useState } from 'react';
 import { getCtgDetail, getStructuredInfo } from '../api/paperApi';
+import { searchLogger } from '../utils/logger';
 
 
 
 const SearchResults = ({ results, onResultSelect, onViewDetails, originalQuery, refinedQuery, appliedQueries, filters }) => {
   const [isQueryPanelOpen, setIsQueryPanelOpen] = useState(false);
+  const [isRefinedQueriesOpen, setIsRefinedQueriesOpen] = useState(false);
   const [selectedItems, setSelectedItems] = useState([]);
   const [mergeFocus, setMergeFocus] = useState('CTG');
 
   if (!results) {
-    // return (
-    //   <div className="mt-6 space-y-10 px-4 w-full max-w-7xl mx-auto">
-    //     <div className="bg-white border border-custom-border rounded-xl p-8 text-center">
-    //       <p className="text-custom-text-subtle">Enter search terms to find relevant clinical trials and publications.</p>
-    //     </div>
-    //   </div>
-    // );
     return null; // not rendering anything if results are not available
   }
 
@@ -26,11 +21,14 @@ const SearchResults = ({ results, onResultSelect, onViewDetails, originalQuery, 
   const counts = results.counts || { total: 0, merged: 0, pm_only: 0, ctg_only: 0 };
 
   // Debug logging
-  console.log('[SearchResults] Received results:', results);
-  console.log('[SearchResults] Unified results type:', typeof unifiedResults);
-  console.log('[SearchResults] Unified results length:', unifiedResults.length);
-  console.log('[SearchResults] First few items:', unifiedResults.slice(0, 2));
-  console.log(refinedQuery, appliedQueries)
+  searchLogger.debug('Received results:', results);
+  searchLogger.debug('Unified results type:', typeof unifiedResults);
+  searchLogger.debug('Unified results length:', unifiedResults.length);
+  searchLogger.debug('First few items:', unifiedResults.slice(0, 2));
+  searchLogger.debug('Queries:', { refinedQuery, appliedQueries });
+  searchLogger.debug('🔍 [DEBUG] appliedQueries in SearchResults:', appliedQueries);
+  searchLogger.debug('🔍 [DEBUG] appliedQueries.clinicaltrials:', appliedQueries?.clinicaltrials);
+  searchLogger.debug('🔍 [DEBUG] appliedQueries.pubmed:', appliedQueries?.pubmed);
 
   const toggleSelectAll = () => {
     setSelectedItems(selectedItems.length === unifiedResults.length ? [] : [...unifiedResults]);
@@ -46,17 +44,17 @@ const SearchResults = ({ results, onResultSelect, onViewDetails, originalQuery, 
     for (const item of selectedItems) {
       if(item.type === 'CTG' || item.type === 'MERGED') {
         try {
-          const detail = await getCtgDetail({ nctId: item.id || item.nctid }); 
+          const detail = await getCtgDetail({ nctId: item.nctid }); 
           detailedItems.push(detail.structured_info);
         } catch (err) {
-          console.error(`Failed to fetch details for ${item.id}:`, err);
+          searchLogger.error(`Failed to fetch details for ${item.nctid}:`, err);
         }
       } else if(item.type === 'PM'){
         try {
           const detail = await getStructuredInfo( { pmcid: item.pmcid, pmid: item.pmid, ref_nctids: item.ref_nctids}); 
           detailedItems.push(detail.structured_info);
         } catch (err) {
-          console.error(`Failed to fetch details for ${item.id}:`, err);
+          searchLogger.error(`Failed to fetch details for ${item.pmid}:`, err);
         }
       }
     } 
@@ -73,7 +71,7 @@ const SearchResults = ({ results, onResultSelect, onViewDetails, originalQuery, 
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (err) {
-      console.error('Failed to create download:', err);
+      searchLogger.error('Failed to create download:', err);
     }
   };
   if (unifiedResults.length === 0) {
@@ -223,10 +221,11 @@ const SearchResults = ({ results, onResultSelect, onViewDetails, originalQuery, 
 
   const renderResultItem = (item) => {
     const handleTitleClick = async () => {
-      if (item.type === 'CTG' || (item.type === 'MERGED')) {
-        const detail = await getCtgDetail({ nctId: item.nctid || item.id }); 
+      if (item.type === 'CTG' || (item.type === 'MERGED' && item.nctid)) {
+        const detail = await getCtgDetail({ nctId: item.nctid }); 
         item.study_details = detail.structured_info.protocolSection;
       }
+      // Always call onResultSelect regardless of type (PM, CTG, or MERGED)
       onResultSelect(item, mergeFocus);
     };
 
@@ -777,13 +776,13 @@ const SearchResults = ({ results, onResultSelect, onViewDetails, originalQuery, 
             <div className="text-xs text-custom-text-subtle mt-2">
               <p>
                 <a
-                  href={`https://clinicaltrials.gov/study/${item.nctid || item.id}`}
+                  href={`https://clinicaltrials.gov/study/${item.nctid}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-custom-green hover:underline"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  {item.nctid || item.id}
+                  {item.nctid}
                 </a>
                 {item.pmids && item.pmids.length > 0 && (
                   <>
@@ -836,107 +835,123 @@ const SearchResults = ({ results, onResultSelect, onViewDetails, originalQuery, 
   return (
     <div className="mt-6 space-y-4 px-4 w-full max-w-7xl mx-auto">
       {(originalQuery || refinedQuery || appliedQueries) && (
-        <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
+        <div className="bg-white border border-custom-border rounded-2xl overflow-hidden shadow-sm">
           <button 
-            className="w-full px-4 py-3 flex justify-between items-center text-left"
+            className="w-full px-5 py-3.5 flex justify-between items-center text-left hover:bg-gray-50 transition-colors"
             onClick={() => setIsQueryPanelOpen(!isQueryPanelOpen)}
           >
-            <span className="font-medium text-gray-800">Search Results</span>
+            <span className="font-semibold text-custom-text">Search Results</span>
             <ChevronDown 
-              className={`w-5 h-5 text-gray-500 transform transition-transform ${isQueryPanelOpen ? 'rotate-180' : 'rotate-0'}`}
+              className={`w-5 h-5 text-custom-text-subtle transform transition-transform duration-200 ${isQueryPanelOpen ? 'rotate-180' : 'rotate-0'}`}
             />
           </button>
           
           {isQueryPanelOpen && (
-            <div className="px-4 pb-4 space-y-2 text-sm text-gray-700">
+            <div className="px-5 pb-4 space-y-3 text-sm border-t border-custom-border">
               {appliedQueries?.pubmed && (
-                <div>
-                  <span className="font-medium">PubMed Search Query: </span>
-                  <div className="ml-4 space-y-1">
-                    <div>
-                      <span className="font-medium">Term: </span>
-                      <span className="font-mono text-xs break-all">{appliedQueries.pubmed}</span>
-                    </div>
+                <div className="pt-3">
+                  <span className="font-medium text-custom-text">PubMed Search Query</span>
+                  <div className="mt-1.5 ml-3 p-2.5 bg-gray-50 rounded-lg border border-custom-border">
+                    <span className="font-mono text-xs text-custom-text break-all">{appliedQueries.pubmed}</span>
                   </div>
                 </div>
               )}
               {appliedQueries?.clinicaltrials && (
-                <div>
-                  <span className="font-medium">ClinicalTrials.gov Search Query:</span>
-                  <div className="ml-4 space-y-1">
-                    <div>
-                      <span className="font-medium">Term: </span>
-                      <span className="font-mono text-xs break-all">{appliedQueries.clinicaltrials}</span>
+                <div className="pt-3">
+                  <span className="font-medium text-custom-text">ClinicalTrials.gov Search Query</span>
+                  <div className="mt-1.5 ml-3 p-2.5 bg-gray-50 rounded-lg border border-custom-border">
+                    <span className="font-mono text-xs text-custom-text break-all">{appliedQueries.clinicaltrials}</span>
+                  </div>
+                  
+                  {/* Refined Queries inside CTG Query Builder */}
+                  {(refinedQuery?.cond || refinedQuery?.intr) && (
+                    <div className="mt-2 ml-3">
+                      <button
+                        onClick={() => setIsRefinedQueriesOpen(!isRefinedQueriesOpen)}
+                        className="flex items-center gap-1.5 text-xs font-medium text-custom-text-subtle hover:text-custom-text transition-colors"
+                      >
+                        <ChevronDown 
+                          className={`w-3.5 h-3.5 transform transition-transform duration-200 ${isRefinedQueriesOpen ? 'rotate-180' : 'rotate-0'}`}
+                        />
+                        <span>Refined Parameters</span>
+                      </button>
+                      {isRefinedQueriesOpen && (
+                        <div className="mt-1.5 space-y-1.5 pl-5">
+                          {refinedQuery.cond && (
+                            <div className="flex items-start gap-2">
+                              <span className="font-medium text-custom-text-subtle min-w-[90px]">Condition:</span>
+                              <span className="text-custom-text">{refinedQuery.cond}</span>
+                            </div>
+                          )}
+                          {refinedQuery.intr && (
+                            <div className="flex items-start gap-2">
+                              <span className="font-medium text-custom-text-subtle min-w-[90px]">Intervention:</span>
+                              <span className="text-custom-text">{refinedQuery.intr}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    {refinedQuery?.cond && (
-                      <div>
-                        <span className="font-medium">Condition: </span>
-                        <span>{refinedQuery.cond}</span>
-                      </div>
-                    )}
-                    {refinedQuery?.intr && (
-                      <div>
-                        <span className="font-medium">Intervention: </span>
-                        <span>{refinedQuery.intr}</span>
-                      </div>
+                  )}
+                </div>
+              )}
+              {filters && Object.keys(filters).length && (
+                <div className="pt-2">
+                  {/* <span className="font-medium text-custom-text">Active Filters</span> */}
+                  <div className="mt-1.5 ml-3 space-y-1">
+                    {Object.entries({
+                      "location": "Location", "city": "City", "state": "State", "country": "Country",
+                      "sex": "Gender", "age": "Age", "studyType": "Study Type", "phase": "Phase", "sponsor": "Sponsor"
+                    }).filter(([key, value]) => value && filters[key]).map(([key, value]) =>
+                      value !== undefined && value !== null && value !== '' ? (
+                        <div className="flex items-start gap-2" key={key}>
+                          <span className="font-medium text-custom-text-subtle min-w-[80px]">{value}:</span>
+                          <span className="text-custom-text">{String(filters[key])}</span>
+                        </div>
+                      ) : null
                     )}
                   </div>
                 </div>
               )}
-              {filters && Object.keys(filters).length && (
-                <div className="mt-1">
-                  <span className="font-medium text-gray-700 ">Search Filters:</span>
-                  {Object.entries({
-                    "location": "Location", "city": "City", "state": "State", "country": "Country",
-                    "sex": "Gender", "age": "Age", "studyType": "Study Type", "phase": "Phase", "sponsor": "Sponsor"
-                  }).filter(([key, value]) => value && filters[key]).map(([key, value]) =>
-                    value !== undefined && value !== null && value !== '' ? (
-                      <div className="ml-2 space-y-1" key={key}>
-                        <span className="font-semibold text-gray-700">{value}:</span>{' '}
-                        <span className="text-custom-text">{String(filters[key])}</span>
-                      </div>
-                    ) : null
-                  )}
+              {refinedQuery && !appliedQueries?.pubmed && !appliedQueries?.clinicaltrials && (
+                <div className="pt-3">
+                  <span className="font-medium text-custom-text">ClinicalTrials.gov Search Terms</span>
+                  <div className="mt-1.5 ml-3 space-y-1">
+                    {Object.entries({
+                      "cond": "Condition", "intr": "Intervention", "other_term": "Other Terms", "city": "City", "state": "State", "country": "Country",
+                      "sex": "Gender", "age": "Age", "study_type": "Study Type", "phase": "Phase", "sponsor": "Sponsor"
+                    }).filter(([key, value]) => value && refinedQuery[key]).map(([key, value]) =>
+                      value !== undefined && value !== null && value !== '' ? (
+                        <div className="flex items-start gap-2" key={key}>
+                          <span className="font-medium text-custom-text-subtle min-w-[80px]">{value}:</span>
+                          <span className="text-custom-text">{String(refinedQuery[key])}</span>
+                        </div>
+                      ) : null
+                    )}
+                  </div>
                 </div>
               )}
-              {refinedQuery && !appliedQueries.pubmed && !appliedQueries.clinicaltrials && (
-                <>
-                  <span className="font-medium text-gray-700">ClinicalTrials.gov Search Terms:</span>
-                  {Object.entries({
-                    "cond": "Condition", "intr": "Intervention", "other_term": "Other Terms", "city": "City", "state": "State", "country": "Country",
-                    "sex": "Gender", "age": "Age", "study_type": "Study Type", "phase": "Phase", "sponsor": "Sponsor"
-                  }).filter(([key, value]) => value && refinedQuery[key]).map(([key, value]) =>
-                    value !== undefined && value !== null && value !== '' ? (
-                      <div className="ml-2 space-y-1" key={key}>
-                        <span className="font-semibold text-gray-700">{value}:</span>{' '}
-                        <span className="text-custom-text">{String(refinedQuery[key])}</span>
-                      </div>
-                    ) : null
-                  )}
-                </>
-              )}
-              
             </div>
           )}
           
           {/* search results statistics */}
-          <div className="px-4 py-3 border-t border-gray-200 bg-gray-50 flex flex-wrap justify-start items-center gap-4 text-sm text-gray-600">
-            <div>
-              <span className="font-medium">Total:</span> {counts.total}
+          <div className="px-5 py-3 border-t border-custom-border bg-custom-bg flex flex-wrap justify-start items-center gap-4 text-sm">
+            <div className="text-custom-text">
+              <span className="font-medium">Total:</span> <span className="font-semibold">{counts.total}</span>
             </div>
             {counts.merged > 0 && (
-              <div>
-                <span className="font-medium">Merged:</span> {counts.merged}
+              <div className="text-custom-text">
+                <span className="font-medium">Merged:</span> <span className="font-semibold">{counts.merged}</span>
               </div>
             )}
             {counts.pm_only > 0 && (
-              <div>
-                <span className="font-medium">PubMed-only:</span> {counts.pm_only}
+              <div className="text-custom-text">
+                <span className="font-medium">PubMed-only:</span> <span className="font-semibold">{counts.pm_only}</span>
               </div>
             )}
             {counts.ctg_only > 0 && (
-              <div>
-                <span className="font-medium">CTG-only:</span> {counts.ctg_only}
+              <div className="text-custom-text">
+                <span className="font-medium">CTG-only:</span> <span className="font-semibold">{counts.ctg_only}</span>
               </div>
             )}
           </div>
@@ -979,13 +994,15 @@ const SearchResults = ({ results, onResultSelect, onViewDetails, originalQuery, 
           Download Selected
         </button>
         </div>
+        </div>
+         {/* Unified results list */}
+          <ul className="space-y-3">
+            {unifiedResults.map((item, index) => renderResultItem(item, index))}
+          </ul>
       </div>
 
-      {/* Unified results list */}
-      <ul className="space-y-3">
-        {unifiedResults.map((item, index) => renderResultItem(item, index))}
-      </ul>
-    </div>
+     
+  
   );
 };
 

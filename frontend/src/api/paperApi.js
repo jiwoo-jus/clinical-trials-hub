@@ -29,3 +29,12 @@ export async function getPmcFullTextHtml(params) {
   });
   return response.data;
 }
+
+/**
+ * Check systematic review eligibility criteria for a paper
+ * @param {{ pmcid: string; inclusion_criteria: string[]; exclusion_criteria: string[] }} body
+ */
+export async function checkSystematicReview(body) {
+  const { data } = await api.post('/api/paper/check_systematic_review', body);
+  return data;
+}

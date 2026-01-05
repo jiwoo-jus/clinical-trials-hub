@@ -27,6 +27,17 @@ const StructuredInfoTabs = ({ structuredInfo }) => {
 
   if (!structuredInfo) return <div>No structured info available.</div>;
 
+  // Check if this is an excluded secondary literature type
+  if (structuredInfo._excluded_type && structuredInfo._message) {
+    return (
+      <div className="flex justify-center items-center text-custom-text-subtle p-6">
+        <div className="text-center">
+          <p className="text-sm font-medium">{structuredInfo._message}</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col">
       <nav className="border-b border-custom-border mb-4">

@@ -1,7 +1,9 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { searchClinicalTrials } from '../api/searchApi';
-import { ChevronDown, Plus } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
+
+const SESSION_KEY = 'searchState';
 
 const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
   const [showMore, setShowMore] = useState(false);
@@ -14,48 +16,44 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
   // Query builder state
   const [currentTerm, setCurrentTerm] = useState("");
   const [queryString, setQueryString] = useState("");
-  const [operator, setOperator] = useState("AND");
 
   // Collect all terms from dynamic queries
-  const allTerms = dynamicQueries?.queries?.flatMap(q => 
-    q.terms?.map(term => ({
-      value: term,
-      category: q.name
-    })) || []
-  ) || [];
+  const allTerms = dynamicQueries?.queries?.reduce((acc, q) => {
+  if (q.terms?.length) {
+    acc[q.name] = q.terms;
+  }
+  return acc;
+}, {}) || {};
+
 
   // Add term to query string
-  const addToQuery = (term, op = operator, nest = false) => {
-    let newQuery = queryString.trim();
-    
-    // Format term with field if not "All Fields"
-    let formattedTerm = term;
+const addToQuery = (term, op = "AND", nest = false) => {
+  let newQuery = queryString.trim();
+  
+  // Format term with field if not "All Fields"
+  let formattedTerm = term;
 
-
-    if (newQuery === "") {
-      // First term - just add it
-      newQuery = formattedTerm;
-    } else if (nest) {
-      // Nesting: wrap the existing query with the new term
-      if (op === "NOT") {
-        newQuery = `(${newQuery}) NOT ${formattedTerm}`;
-      } else {
-        newQuery = `(${newQuery} ${op} ${formattedTerm})`;
-      }
+  if (newQuery === "") {
+    // First term - just add it
+    newQuery = formattedTerm;
+  } else if (nest) {
+    // Nesting: wrap the existing query in parentheses, THEN add operator and new term
+    if (op === "NOT") {
+      newQuery = `(${newQuery}) NOT ${formattedTerm}`;
     } else {
-      // Append: just add to the end with operator
-      if (op === "NOT") {
-        newQuery = `${newQuery} NOT ${formattedTerm}`;
-      } else {
-        newQuery = `${newQuery} ${op} ${formattedTerm}`;
-      }
+      newQuery = `(${newQuery}) ${op} ${formattedTerm}`;
     }
-
-    setQueryString(newQuery);
-    
-    
-    setCurrentTerm("");
-  };
+  } else {
+    // Append: just add to the end with operator
+    if (op === "NOT") {
+      newQuery = `${newQuery} NOT ${formattedTerm}`;
+    } else {
+      newQuery = `${newQuery} ${op} ${formattedTerm}`;
+    }
+  }
+  setQueryString(newQuery);
+  setCurrentTerm("");
+};
 
   // Handle term click from list
   const handleTermClick = (term) => {
@@ -91,6 +89,7 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
     try {
       const res = await searchClinicalTrials(params);
       setResults({
+        search_key: res.search_key,
         results: Array.isArray(res.results) ? res.results : [],
         counts: res.counts || {
           total: 0,
@@ -111,48 +110,116 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
     setLoading(false);
   };
 
-  // Handle query search for dynamic queries
-  const handleQuerySearch = useCallback(async (dynamicq) => {
-    let dynamicResults = [];
-    if (dynamicq) {
-      for (const item of dynamicq) {
-        const params = {
-          cond: item.cond || "",
-          intr: item.intr || "",
-          other_term: item.other_term || "",
-          isRefined: true,
-          refinedQuery: {
-            cond: item.cond || "",
-            intr: item.intr || "",
-            other_term: item.other_term || "",
-            combined_query: item.combined_query || "",
-          },
-        };
+  const handleQuerySearch = useCallback(async (queries) => {
+    // if cache is missing, fetch dynamic query results here
+    if (!queries || !Array.isArray(queries) || queries.length === 0) return;
+    setLoading(true);
+    const resultsArr = [];
+
+    for (let i = 0; i < queries.length; i++) {
+      const q = queries[i];
+      const params = {
+        isRefined: true,
+        refinedQuery: {
+          combined_query: q.combined_query || q.query || "",
+        },
+        // include any explicit fields if present
+        ...(q.cond ? { cond: q.cond } : {}),
+        ...(q.intr ? { intr: q.intr } : {}),
+        ...(q.other_term ? { other_term: q.other_term } : {}),
+      };
+
+      try {
         const res = await searchClinicalTrials(params);
-        dynamicResults.push({
+        resultsArr[i] = {
+          search_key: res.search_key,
           results: Array.isArray(res.results) ? res.results : [],
-          counts: res.counts || {
-            total: 0,
-            merged: 0,
-            pm_only: 0,
-            ctg_only: 0,
-          },
+          counts: res.counts || { total: 0, merged: 0, pm_only: 0, ctg_only: 0 },
           total: res.total || 0,
           totalPages: res.totalPages || 1,
           filter_stats: res.filter_stats,
           refinedQuery: res.refinedQuery,
           appliedQueries: res.appliedQueries,
-        });
+        };
+      } catch (err) {
+        console.debug('[QueryList] Error fetching dynamic query', q, err);
+        resultsArr[i] = {
+          search_key: null,
+          results: [],
+          counts: { total: 0, merged: 0, pm_only: 0, ctg_only: 0 },
+          total: 0,
+          totalPages: 1,
+          filter_stats: {},
+          refinedQuery: { combined_query: q.combined_query || '' },
+          appliedQueries: [],
+        };
       }
     }
-    setQueryResults(dynamicResults);
+
+    setQueryResults(resultsArr);
+
+    try {
+      const cacheString = sessionStorage.getItem(SESSION_KEY);
+      const parsed = cacheString ? JSON.parse(cacheString) : {};
+      parsed.dynamicQueryResults = resultsArr;
+      // need to fix
+      parsed.dynamicSelectedIndex = null;
+      parsed.dynamicResultSelected = false;
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(parsed));
+      console.debug('[QueryList] Saved dynamic query results to cache');
+    } catch (e) {
+      console.debug('[QueryList] Failed to save dynamic query results to cache', e);
+    }
+
+    setLoading(false);
   }, []);
 
   useEffect(() => {
-    if (dynamicQueries?.queries) {
-      setTimeout(() => {
-        handleQuerySearch(dynamicQueries.queries);
-      }, 100);
+    // Restore cached dynamic query results from sessionStorage only
+    let restored = false;
+    try {
+      const cacheString = sessionStorage.getItem(SESSION_KEY);
+      if (cacheString) {
+        const parsed = JSON.parse(cacheString);
+        if (
+          parsed &&
+          parsed.dynamicQueryResults &&
+          Array.isArray(parsed.dynamicQueryResults) &&
+          dynamicQueries?.queries &&
+          Array.isArray(dynamicQueries.queries) &&
+          parsed.dynamicQueryResults.length === dynamicQueries.queries.length
+        ) {
+          // Only restore when cached results exist and align with current dynamicQueries
+          setQueryResults(parsed.dynamicQueryResults);
+
+          // Restore selection state if available
+          if (typeof parsed.dynamicSelectedIndex !== 'undefined' && parsed.dynamicSelectedIndex !== null) {
+            setSelected(parsed.dynamicSelectedIndex);
+            
+            console.debug('[QueryList] Restored dynamicSelectedIndex from cache:', parsed.dynamicSelectedIndex);
+          }
+          if (typeof parsed.dynamicResultSelected !== 'undefined' && parsed.dynamicResultSelected !== null) {
+            setResultSelected(parsed.dynamicResultSelected);
+            
+            console.debug('[QueryList] Restored dynamicResultSelected from cache:', parsed.dynamicResultSelected);
+          }
+
+          restored = true;
+          
+          console.debug('[QueryList] Restored dynamic query results from cache');
+        }
+      }
+    } catch (e) {
+      
+      console.debug('[QueryList] Error restoring from cache:', e);
+    }
+
+    // If nothing restored, fall back to fetching the dynamic results here
+    if (!restored && dynamicQueries?.queries) {
+      
+      console.debug('[QueryList] No cached dynamic results found; fetching now');
+      // populate results by calling handleQuerySearch
+      handleQuerySearch(dynamicQueries.queries);
     }
   }, [dynamicQueries, handleQuerySearch]);
 
@@ -203,71 +270,77 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                   
                 </div>
 
-                {/* Operator Selection and Add Button */}
-                <div className="flex items-center gap-2">
-                  <select
-                    value={operator}
-                    onChange={(e) => setOperator(e.target.value)}
-                    className="border border-gray-300 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="AND">AND</option>
-                    <option value="OR">OR</option>
-                    <option value="NOT">NOT</option>
-                  </select>
-
+                {/* Operator Selection (always visible, no plus icons) */}
+                <div className="flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => currentTerm.trim() && addToQuery(currentTerm, operator, false)}
+                    onClick={() => currentTerm.trim() && addToQuery(currentTerm, "AND", false)}
                     disabled={!currentTerm.trim()}
-                    className="px-2 py-1 rounded-full border  text-black text-sm font-semibold disabled:cursor-not-allowed flex items-center gap-1"
+                    className="px-2 bg-gray-100 py-1 border border-dashed rounded-sm text-sm font-semibold disabled:cursor-not-allowed"
                   >
-                    <Plus className="w-4 h-4" />
+                    AND
+                  </button>
+                  <button
+                    onClick={() => currentTerm.trim() && addToQuery(currentTerm, "OR", false)}
+                    disabled={!currentTerm.trim()}
+                    className="px-2 bg-gray-100 py-1 border border-dashed rounded-sm text-sm font-semibold disabled:cursor-not-allowed"
+                  >
+                    OR
+                  </button>
+                  <button
+                    onClick={() => currentTerm.trim() && addToQuery(currentTerm, "NOT", false)}
+                    disabled={!currentTerm.trim()}
+                    className="px-2 bg-gray-100 py-1 border border-dashed rounded-sm text-sm font-semibold disabled:cursor-not-allowed"
+                  >
+                    NOT
                   </button>
 
                   <button
                     onClick={() => currentTerm.trim() && addToQuery(currentTerm, "AND", true)}
                     disabled={!currentTerm.trim() || !queryString.trim()}
-                    className="px-2 py-1  bg-blue-600 text-white text-sm font-semibold  disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"
+                    className="px-2 bg-gray-100 py-1 border border-dashed rounded-sm text-sm font-semibold disabled:cursor-not-allowed"
                   >
-                    Add with AND
+                    ( ) AND
                   </button>
-
                   <button
                     onClick={() => currentTerm.trim() && addToQuery(currentTerm, "OR", true)}
                     disabled={!currentTerm.trim() || !queryString.trim()}
-                    className="px-2 py-1  bg-blue-600 text-white text-sm font-semibold  disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"
+                    className="px-2 bg-gray-100 py-1 border border-dashed rounded-sm text-sm font-semibold disabled:cursor-not-allowed"
                   >
-                    Add with OR
+                    ( ) OR
                   </button>
-
                   <button
                     onClick={() => currentTerm.trim() && addToQuery(currentTerm, "NOT", true)}
                     disabled={!currentTerm.trim() || !queryString.trim()}
-                    className="px-2 py-1  bg-blue-600 text-white text-sm font-semibold  disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-1"
+                    className="px-2 bg-gray-100 py-1 border border-dashed rounded-sm text-sm font-semibold disabled:cursor-not-allowed"
                   >
-                    Add with NOT
+                    ( ) NOT
                   </button>
                 </div>
               </div>
 
               <div className="mt-4">
-                <h4 className="text-xs font-semibold text-gray-600 mb-2">
-                  Terms
-                </h4>
                 <div className="flex flex-wrap gap-2">
-                  {allTerms.length > 0 ? (
-                    allTerms.map((item, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => handleTermClick(item.value)}
-                        className={`px-2 py-1 text-sm font-bold transition-colors ${
-                          currentTerm === item.value
-                            ? "bg-purple-700 text-white "
-                            :  "bg-purple-100 text-purple-800 hover:bg-purple-200"
-                        }`}
-                        title={item.category}
-                      >
-                        {item.value}
-                      </button>
+                  {Object.keys(allTerms).length > 0 ? (
+                    Object.entries(allTerms).map(([category, terms]) => (
+                      <div key={category} className="">
+                        <h3 className="text-xs font-semibold text-gray-600 mb-1">{category.replace("Refined ", "")}</h3>
+                        <div className="flex flex-wrap gap-2">
+                          {terms.map((term, idx) => (
+                            <button
+                              key={`${category}-${idx}`}
+                              onClick={() => handleTermClick(term)}
+                              className={`px-2 py-1 text-sm font-bold transition-colors ${
+                                currentTerm === term
+                                  ? "bg-purple-700 text-white"
+                                  : "bg-purple-100 text-purple-800 hover:bg-purple-200"
+                              }`}
+                              title={category}
+                            >
+                              {term}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     ))
                   ) : (
                     <p className="text-sm text-gray-500 italic">No suggestions available</p>
@@ -297,32 +370,26 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
               />
               
               <button
-                className="mt-1 text-sm  bg-green-600 hover:bg-blue-700 text-white font-bold rounded-full py-1 px-3 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                className="mt-1 text-sm  bg-green-600 text-white font-bold rounded-full py-1 px-3 disabled:bg-gray-400 disabled:cursor-not-allowed"
                 onClick={handleAdvancedSearch}
                 disabled={!queryString.trim()}
               >
                 Search
               </button>
-            </div>
 
-          </div>
-
-      
-
-            {/* Results Preview */}
-            <div className="border border-gray-200 rounded-lg p-4 bg-white">
-              <h4 className="text-sm font-bold text-gray-700 mb-2">
+              {/* Results Preview */}
+            <div className=" bg-gray-50 border border-gray-200 rounded-md mt-4 p-3">
+              <h4 className="text-sm font-bold text-gray-700">
                 Results Preview
               </h4>
               {loading && (
-                <div className="text-sm text-gray-500 flex items-center">
-                  <div className="rounded-full h-4 w-4 border-b-2 border-gray-900 mr-2"></div>
+                <div className="text-sm mt-2 text-gray-500 flex items-center">
                   Loading...
                 </div>
               )}
               {results && results.total > 0 && (
-                <div>
-                  <div className="flex flex-wrap gap-4 text-sm mb-3">
+                <div className="mt-2">
+                  <div className="flex flex-wrap gap-4 text-sm mb-1">
                     {results.counts?.pm_only > 0 && (
                       <div>
                         <span className="font-bold text-blue-700">PubMed: </span>
@@ -344,13 +411,13 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                     {results.counts?.total > 0 && (
                       <div>
                         <span className="font-bold text-gray-800">Total: </span>
-                        <span className="text-gray-900 font-semibold">{results.counts.total}</span>
+                        <span className="text-gray-800">{results.counts.total}</span>
                       </div>
                     )}
                   </div>
 
                   <button
-                    className="text-blue-600 hover:underline  rounded-md text-sm font-semibold"
+                    className="text-gray-600 hover:underline  rounded-md text-sm "
                     onClick={() => {
                       setResultSelected(true);
                       setSelected(null);
@@ -361,12 +428,14 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                   </button>
                 </div>
               )}
-              {!loading && (!results || results.total === 0) && queryString && (
-                <div className="text-sm text-gray-500">
-                  Click Search to see results
-                </div>
-              )}
             </div>
+            </div>
+
+          </div>
+
+      
+
+            
           </div>
         )}
       </div>
@@ -379,17 +448,31 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
             <div
               key={index}
               className={`${
-                index === selected ? "ring-2 ring-blue-400" : ""
+                index === selected ? "ring-2 ring-blue-300" : ""
               } rounded-lg shadow-sm flex flex-col bg-white border border-gray-200 p-4 hover:shadow-md transition-shadow`}
             >
               <div className="flex items-center justify-between mb-2">
-                <span className="bg-purple-100 rounded-full text-purple-700 text-sm font-bold px-3 py-1">
+                <span className="bg-purple-100 rounded-full text-purple-800 text-sm font-bold px-3 py-1">
                   {item.name || ""}
                 </span>
                 {queryResults?.length > 0 && queryResults[index] && (
                   <button
                     className="text-gray-600 text-sm hover:text-blue-600 hover:underline"
                     onClick={() => {
+                      // Persist selection state so SearchPage.restore can pick it up
+                      try {
+                        const cacheString = sessionStorage.getItem(SESSION_KEY);
+                        const parsed = cacheString ? JSON.parse(cacheString) : {};
+                        parsed.dynamicSelectedIndex = index;
+                        parsed.dynamicResultSelected = true;
+                        sessionStorage.setItem(SESSION_KEY, JSON.stringify(parsed));
+                        
+                        console.debug('[QueryList] Persisted dynamic selection to cache:', index);
+                      } catch (e) {
+                        
+                        console.debug('[QueryList] Failed to persist dynamic selection to cache', e);
+                      }
+
                       setResultSelected(true);
                       setSelected(index);
                       handleQuerySelect(queryResults[index]);
@@ -408,7 +491,7 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                   <div className="my-2 flex flex-wrap gap-1">
                     {item.cond.split(' OR ').map((condPart, i, arr) => (
                       <div key={i} className="flex items-center">
-                        <span className={`text-xs px-2 py-1 font-semibold rounded ${
+                        <span className={`text-xs px-2 py-1 font-semibold  ${
                           i === 0 ? 'bg-gray-100 text-gray-800' : 'bg-blue-100 text-blue-800'
                         }`}>
                           {condPart}
@@ -424,7 +507,7 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                   <div className="my-2 flex flex-wrap gap-1">
                     {item.intr.split(' OR ').map((intrPart, i, arr) => (
                       <div key={i} className="flex items-center">
-                        <span className={`text-xs px-2 py-1 font-semibold rounded ${
+                        <span className={`text-xs px-2 py-1 font-semibold  ${
                           i === 0 ? 'bg-gray-100 text-gray-800' : 'bg-blue-100 text-blue-800'
                         }`}>
                           {intrPart}
@@ -440,7 +523,7 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
                   <div className="my-2 flex flex-wrap gap-1">
                     {item.other_term.split(' OR ').map((other, i, arr) => (
                       <div key={i} className="flex items-center">
-                        <span className={`text-xs px-2 py-1 font-semibold rounded ${
+                        <span className={`text-xs px-2 py-1 font-semibold  ${
                           i === 0 ? 'bg-gray-100 text-gray-800' : 'bg-blue-100 text-blue-800'
                         }`}>
                           {other}
@@ -463,9 +546,40 @@ const QueryList = ({ dynamicQueries, handleQuerySelect, baseResults }) => {
 
       {resultSelected && (
         <button
-          className="hover:underline p-2 text-sm text-blue-600 font-semibold"
+          className="hover:underline p-2 text-sm text-gray-600 font-semibold"
           onClick={() => {
+            // Clear selection state locally AND from cache
             setSelected(null);
+            setResultSelected(false);
+
+            // Clear dynamic selection from cache so it doesn't restore on next page load
+            try {
+              const cacheString = sessionStorage.getItem(SESSION_KEY);
+              const parsed = cacheString ? JSON.parse(cacheString) : {};
+              parsed.dynamicSelectedIndex = null;
+              parsed.dynamicResultSelected = false;
+              sessionStorage.setItem(SESSION_KEY, JSON.stringify(parsed));
+              console.debug('[QueryList] Cleared dynamicSelectedIndex/dynamicResultSelected from cache');
+            } catch (e) {
+              console.debug('[QueryList] Failed to clear dynamic selection from cache', e);
+            }
+
+            // If `baseResults` prop is empty (timing/restore issue), try to read from session cache
+            if (!baseResults || Object.keys(baseResults).length === 0) {
+              try {
+                const cacheString = sessionStorage.getItem(SESSION_KEY);
+                const parsed = cacheString ? JSON.parse(cacheString) : {};
+                const fallback = parsed.baseResults || (parsed.pageCache && parsed.pageCache[parsed.currentPage] && parsed.pageCache[parsed.currentPage].results) || {};
+                
+                console.debug('[QueryList] baseResults prop empty — using fallback from cache:', fallback);
+                handleQuerySelect(fallback);
+                return;
+              } catch (e) {
+                
+                console.debug('[QueryList] Failed to read baseResults from cache fallback', e);
+              }
+            }
+
             handleQuerySelect(baseResults);
           }}
         >

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { PanelLeft, PanelRight } from 'lucide-react';
-import SearchFiltersSidebar from './SearchFiltersSidebar';
+import PubMedFiltersSidebar from './PubMedFiltersSidebar';
 
 const FilterSidebar = ({ 
   isVisible, 
@@ -9,6 +9,8 @@ const FilterSidebar = ({
   isLoading, 
   searchKey, 
   filterStats,
+  filters,
+  setFilters,
   expandedWidth = "25%",
   collapsedWidth = "2rem",
   onToggle,
@@ -90,11 +92,13 @@ const FilterSidebar = ({
             overflowY: 'auto' 
           }}
         >
-          <SearchFiltersSidebar
+          <PubMedFiltersSidebar
             onApplyFilters={onApplyFilters}
             isLoading={isLoading}
             searchKey={searchKey}
             filterStats={filterStats}
+            filters={filters}
+            setFilters={setFilters}
           />
         </div>
       )}
@@ -108,6 +112,8 @@ FilterSidebar.propTypes = {
   isLoading: PropTypes.bool,
   searchKey: PropTypes.string,
   filterStats: PropTypes.object,
+  filters: PropTypes.object,
+  setFilters: PropTypes.func,
   expandedWidth: PropTypes.string,
   collapsedWidth: PropTypes.string,
   onToggle: PropTypes.func,
