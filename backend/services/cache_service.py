@@ -1,11 +1,15 @@
-import redis
-import json
-import os
-from typing import Optional, Dict, Any
 import hashlib
+import json
+import logging
+import os
+import time
 from datetime import date, datetime
 from decimal import Decimal
-import time
+from typing import Any, Dict, Optional
+
+import redis
+
+logger = logging.getLogger(__name__)
 
 # Memory-based cache (alternative to Redis)
 memory_cache = {}
@@ -21,9 +25,9 @@ try:
     # Connection test
     redis_client.ping()
     redis_available = True
-    print("Redis connection successful")
+    logger.info("Redis connection successful")
 except Exception as e:
-    print(f"Redis not available, using memory cache instead: {e}")
+    logger.warning(f"Redis not available, using memory cache instead: {e}")
     redis_available = False
     redis_client = None
 
@@ -42,9 +46,19 @@ class DateTimeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 def generate_search_key(params: dict) -> str:
-    """Generate a unique key based on search parameters"""
+    """
+    Generate a unique key based on search parameters.
+    Excludes pagination-related fields to ensure consistent caching across pages.
+    """
+    # Create a copy and remove pagination-related fields
+    key_params = params.copy()
+    # Remove fields that shouldn't affect cache key
+    key_params.pop('page', None)
+    key_params.pop('pageSize', None)
+    key_params.pop('ctgPageToken', None)
+    
     # Generate consistent keys with sorted parameters
-    sorted_params = json.dumps(params, sort_keys=True, cls=DateTimeEncoder)
+    sorted_params = json.dumps(key_params, sort_keys=True, cls=DateTimeEncoder)
     return f"search:{hashlib.md5(sorted_params.encode()).hexdigest()}"
 
 def _clean_memory_cache():
@@ -83,18 +97,24 @@ def cache_search_results(key: str, results: Dict[str, Any]) -> None:
         # Save to Redis if available
         try:
             redis_client.setex(key, CACHE_TTL, json.dumps(results, cls=DateTimeEncoder))
-            print(f"Cached to Redis: {key}")
+            logger.info(f"✅ Cached to Redis: {key}")
+            # Log what was cached for debugging
+            if "appliedQueries" in results:
+                logger.debug(f"   📝 Queries cached: {results['appliedQueries']}")
             return
         except Exception as e:
-            print(f"Redis cache error, falling back to memory: {e}")
+            logger.warning(f"❌ Redis cache error, falling back to memory: {e}")
     
     # Use memory cache if Redis is not available
     try:
         _clean_memory_cache()  # Clean up expired items
         memory_cache[key] = (results, time.time())
-        print(f"Cached to memory: {key} (Total: {len(memory_cache)} items)")
+        logger.info(f"✅ Cached to memory: {key} (Total: {len(memory_cache)} items)")
+        # Log what was cached for debugging
+        if "appliedQueries" in results:
+            logger.debug(f"   📝 Queries cached: {results['appliedQueries']}")
     except Exception as e:
-        print(f"Memory cache error: {e}")
+        logger.error(f"❌ Memory cache error: {e}")
 
 def get_cached_results(key: str) -> Optional[Dict[str, Any]]:
     """Retrieve cached search results"""
@@ -103,10 +123,14 @@ def get_cached_results(key: str) -> Optional[Dict[str, Any]]:
         try:
             data = redis_client.get(key)
             if data:
-                print(f"Retrieved from Redis: {key}")
-                return json.loads(data)
+                result = json.loads(data)
+                logger.info(f"✅ Retrieved from Redis: {key}")
+                # Log what was retrieved for debugging
+                if "appliedQueries" in result:
+                    logger.debug(f"   📝 Queries retrieved: {result['appliedQueries']}")
+                return result
         except Exception as e:
-            print(f"Redis retrieve error, trying memory cache: {e}")
+            logger.warning(f"❌ Redis retrieve error, trying memory cache: {e}")
     
     # Attempt from memory cache
     try:
@@ -116,31 +140,35 @@ def get_cached_results(key: str) -> Optional[Dict[str, Any]]:
             
             # Check TTL
             if current_time - timestamp <= CACHE_TTL:
-                print(f"Retrieved from memory: {key}")
+                logger.info(f"✅ Retrieved from memory: {key}")
+                # Log what was retrieved for debugging
+                if "appliedQueries" in data:
+                    logger.debug(f"   📝 Queries retrieved: {data['appliedQueries']}")
                 return data
             else:
                 # Delete expired data
                 del memory_cache[key]
-                print(f"Expired data removed from memory: {key}")
+                logger.debug(f"⏰ Expired data removed from memory: {key}")
         
-        print(f"No cached data found: {key}")
+        logger.info(f"❌ No cached data found: {key}")
+        logger.debug(f"   Available keys in memory: {list(memory_cache.keys())[:5]}")  # Show first 5 keys
         return None
     except Exception as e:
-        print(f"Memory cache retrieve error: {e}")
+        logger.error(f"❌ Memory cache retrieve error: {e}")
         return None
 
 def test_redis_connection() -> bool:
     """Test Redis connection status"""
     if not redis_client:
-        print("Redis client not initialized")
+        logger.warning("Redis client not initialized")
         return False
     
     try:
         redis_client.ping()
-        print("Redis connection successful")
+        logger.info("Redis connection successful")
         return True
     except Exception as e:
-        print(f"Redis connection failed: {e}")
+        logger.error(f"Redis connection failed: {e}")
         return False
 
 def clear_cache_pattern(pattern: str) -> int:
@@ -153,9 +181,9 @@ def clear_cache_pattern(pattern: str) -> int:
             keys = redis_client.keys(pattern)
             if keys:
                 deleted_count += redis_client.delete(*keys)
-                print(f"Deleted {deleted_count} keys from Redis")
+                logger.info(f"Deleted {deleted_count} keys from Redis")
         except Exception as e:
-            print(f"Redis cache clear error: {e}")
+            logger.error(f"Redis cache clear error: {e}")
     
     # Delete from memory cache
     try:
@@ -170,9 +198,9 @@ def clear_cache_pattern(pattern: str) -> int:
             del memory_cache[key]
             deleted_count += 1
         
-        print(f"Deleted {len(keys_to_delete)} keys from memory cache")
+        logger.info(f"Deleted {len(keys_to_delete)} keys from memory cache")
     except Exception as e:
-        print(f"Memory cache clear error: {e}")
+        logger.error(f"Memory cache clear error: {e}")
     
     return deleted_count
 
@@ -182,7 +210,8 @@ def get_cache_info() -> Dict[str, Any]:
         "redis_available": redis_available,
         "memory_cache_size": len(memory_cache),
         "memory_cache_max_size": MEMORY_CACHE_MAX_SIZE,
-        "cache_ttl": CACHE_TTL
+        "cache_ttl": CACHE_TTL,
+        "cache_keys_sample": list(memory_cache.keys())[:10] if not redis_available else []
     }
     
     if redis_available and redis_client:
@@ -242,7 +271,7 @@ class CacheService:
             
             return True
         except Exception as e:
-            print(f"Failed to cache insights: {e}")
+            logger.error(f"Failed to cache insights: {e}")
             return False
     
     def get_insights(self, insights_key: str) -> Optional[Dict[str, Any]]:
@@ -264,7 +293,7 @@ class CacheService:
             
             return None
         except Exception as e:
-            print(f"Failed to get insights from cache: {e}")
+            logger.error(f"Failed to get insights from cache: {e}")
             return None
     
     def invalidate_insights(self, search_key: str) -> bool:

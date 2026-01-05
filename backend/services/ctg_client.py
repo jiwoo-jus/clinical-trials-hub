@@ -17,10 +17,22 @@ class CtgApiError(RuntimeError):
     """CTG API error (4xx/5xx responses)"""
 
 async def fetch_all_ctg_ids(term: Optional[str] = None, cond: Optional[str] = None,
-                           intr: Optional[str] = None, max_limit: int = MAX_FETCH_SIZE) -> List[str]:
+                           intr: Optional[str] = None, max_limit: int = MAX_FETCH_SIZE,
+                           area_filter: Optional[str] = None,
+                           last_update_post_date: Optional[str] = None,
+                           overall_status: Optional[str] = None) -> List[str]:
     """
     Fetch all CTG study IDs using paginated requests.
     Based on the test file approach but with async support.
+    
+    Args:
+        term: General search term (can include AREA filters)
+        cond: Condition/disease
+        intr: Intervention
+        max_limit: Maximum number of IDs to fetch
+        area_filter: AREA filter string to append to query.term (e.g., 'AREA[protocolSection.designModule.studyType] Interventional')
+        last_update_post_date: Date range filter (e.g., '2023-01-01_2024-12-31')
+        overall_status: Overall status filter (e.g., 'RECRUITING|COMPLETED')
     """
     all_ids = []
     page_size = CTG_MAX_PAGE_SIZE
@@ -31,13 +43,37 @@ async def fetch_all_ctg_ids(term: Optional[str] = None, cond: Optional[str] = No
         "countTotal": "true"
     }
     
-    # Add search parameters
-    if term:
-        params["query.term"] = term
-    if cond:
+    # Build combined query.term with AREA filters
+    query_term_parts = []
+    if term and term != 'None' and str(term).strip():
+        query_term_parts.append(str(term).strip())
+    if area_filter:
+        query_term_parts.append(area_filter)
+    
+    if query_term_parts:
+        params["query.term"] = " AND ".join(query_term_parts)
+        log.info(f"🔍 CTG query.term: {params['query.term']}")
+    else:
+        log.warning("⚠️ No query.term built! Both 'term' and 'area_filter' are empty.")
+    
+    # Add search parameters - only add non-None, non-empty values
+    if cond and cond != 'None' and str(cond).strip():
         params["query.cond"] = cond
-    if intr:
+        log.info(f"  query.cond: {cond}")
+    if intr and intr != 'None' and str(intr).strip():
         params["query.intr"] = intr
+        log.info(f"  query.intr: {intr}")
+    
+    # Add overall status filter
+    if overall_status:
+        params["filter.overallStatus"] = overall_status
+        log.info(f"  filter.overallStatus: {overall_status}")
+    
+    # Add date filter parameter (backward compatibility, but should be in area_filter now)
+    if last_update_post_date:
+        params["lastUpdatePostDate"] = last_update_post_date
+        log.warning(f"⚠️ Using deprecated lastUpdatePostDate parameter: {last_update_post_date}")
+        log.warning("   Date filtering should be in area_filter using AREA[LastUpdatePostDate]RANGE syntax")
     
     try:
         # Try async first
@@ -91,13 +127,16 @@ async def fetch_all_ctg_ids(term: Optional[str] = None, cond: Optional[str] = No
     except ImportError:
         # Fallback to synchronous requests
         log.info("aiohttp not available, falling back to synchronous CTG requests")
-        all_ids = _fetch_all_ctg_ids_sync(term, cond, intr, max_limit)
+        all_ids = _fetch_all_ctg_ids_sync(term, cond, intr, max_limit, area_filter, last_update_post_date)
     
     log.info(f"🎉 Done. Total collected CTG IDs: {len(all_ids)}")
     return all_ids
 
 def _fetch_all_ctg_ids_sync(term: Optional[str] = None, cond: Optional[str] = None,
-                           intr: Optional[str] = None, max_limit: int = MAX_FETCH_SIZE) -> List[str]:
+                           intr: Optional[str] = None, max_limit: int = MAX_FETCH_SIZE,
+                           area_filter: Optional[str] = None,
+                           last_update_post_date: Optional[str] = None,
+                           overall_status: Optional[str] = None) -> List[str]:
     """Synchronous fallback for fetching all CTG IDs."""
     all_ids = []
     page_size = CTG_MAX_PAGE_SIZE
@@ -108,13 +147,37 @@ def _fetch_all_ctg_ids_sync(term: Optional[str] = None, cond: Optional[str] = No
         "countTotal": "true"
     }
     
-    # Add search parameters
-    if term:
-        params["query.term"] = term
-    if cond:
+    # Build combined query.term with AREA filters
+    query_term_parts = []
+    if term and term != 'None' and str(term).strip():
+        query_term_parts.append(str(term).strip())
+    if area_filter:
+        query_term_parts.append(area_filter)
+    
+    if query_term_parts:
+        params["query.term"] = " AND ".join(query_term_parts)
+        log.info(f"🔍 CTG query.term (sync): {params['query.term']}")
+    else:
+        log.warning("⚠️ No query.term built (sync)! Both 'term' and 'area_filter' are empty.")
+    
+    # Add search parameters - only add non-None, non-empty values
+    if cond and cond != 'None' and str(cond).strip():
         params["query.cond"] = cond
-    if intr:
+        log.info(f"  query.cond: {cond}")
+    if intr and intr != 'None' and str(intr).strip():
         params["query.intr"] = intr
+        log.info(f"  query.intr: {intr}")
+    
+    # Add overall status filter
+    if overall_status:
+        params["filter.overallStatus"] = overall_status
+        log.info(f"  filter.overallStatus: {overall_status}")
+    
+    # Add date filter parameter (backward compatibility, but should be in area_filter now)
+    if last_update_post_date:
+        params["lastUpdatePostDate"] = last_update_post_date
+        log.warning(f"⚠️ Using deprecated lastUpdatePostDate parameter (sync): {last_update_post_date}")
+        log.warning("   Date filtering should be in area_filter using AREA[LastUpdatePostDate]RANGE syntax")
     
     page_token = None
     
@@ -166,11 +229,25 @@ def _fetch_all_ctg_ids_sync(term: Optional[str] = None, cond: Optional[str] = No
     return all_ids
 
 def search_ids(term: Optional[str] = None, cond: Optional[str] = None,
-               intr: Optional[str] = None, page_size: int = 25,
+               intr: Optional[str] = None, area_filter: Optional[str] = None,
+               last_update_post_date: Optional[str] = None,
+               overall_status: Optional[str] = None,
+               page_size: int = 25,
                page_token: Optional[str] = None, fetch_all: bool = False) -> Tuple[List[str], int, Optional[str]]:
     """
     Search CTG API for study IDs.
     If fetch_all=True, ignores pagination and fetches all IDs up to max limit.
+    
+    Args:
+        term: General search term (can include AREA filters)
+        cond: Condition/disease
+        intr: Intervention
+        area_filter: AREA filter string (e.g., 'AREA[protocolSection.designModule.studyType] Interventional')
+        last_update_post_date: Date range filter
+        overall_status: Status filter (e.g., 'RECRUITING', 'RECRUITING|COMPLETED')
+        page_size: Results per page
+        page_token: Pagination token
+        fetch_all: Whether to fetch all results
     """
     if fetch_all:
         # Use the new fetch_all function
@@ -180,13 +257,22 @@ def search_ids(term: Optional[str] = None, cond: Optional[str] = None,
             if asyncio.get_event_loop().is_running():
                 # We're already in an async context, but can't await here
                 # Fall back to sync version
-                all_ids = _fetch_all_ctg_ids_sync(term, cond, intr, max_limit=MAX_FETCH_SIZE)
+                all_ids = _fetch_all_ctg_ids_sync(term, cond, intr, max_limit=MAX_FETCH_SIZE,
+                                                 area_filter=area_filter,
+                                                 last_update_post_date=last_update_post_date,
+                                                 overall_status=overall_status)
             else:
                 # Create new event loop
-                all_ids = asyncio.run(fetch_all_ctg_ids(term, cond, intr, max_limit=MAX_FETCH_SIZE))
+                all_ids = asyncio.run(fetch_all_ctg_ids(term, cond, intr, max_limit=MAX_FETCH_SIZE,
+                                                        area_filter=area_filter,
+                                                        last_update_post_date=last_update_post_date,
+                                                        overall_status=overall_status))
         except Exception:
             # Fallback to sync version
-            all_ids = _fetch_all_ctg_ids_sync(term, cond, intr, max_limit=MAX_FETCH_SIZE)
+            all_ids = _fetch_all_ctg_ids_sync(term, cond, intr, max_limit=MAX_FETCH_SIZE,
+                                             area_filter=area_filter,
+                                             last_update_post_date=last_update_post_date,
+                                             overall_status=overall_status)
         
         return all_ids, len(all_ids), None
     
@@ -198,15 +284,25 @@ def search_ids(term: Optional[str] = None, cond: Optional[str] = None,
     }
     
     if page_token:
-        params["pageToken"] = page_token
+        params["pageToken"] = page_token    # Build combined query.term with AREA filters
+    query_term_parts = []
+    if term and term != 'None' and str(term).strip():
+        query_term_parts.append(str(term).strip())
+    if area_filter:
+        query_term_parts.append(area_filter)
     
-    # Add search parameters
-    if term:
-        params["query.term"] = term
-    if cond:
+    if query_term_parts:
+        params["query.term"] = " AND ".join(query_term_parts)
+    
+    # Add search parameters - only add non-None, non-empty values
+    if cond and cond != 'None' and str(cond).strip():
         params["query.cond"] = cond
-    if intr:
+    if intr and intr != 'None' and str(intr).strip():
         params["query.intr"] = intr
+    
+    # Add date filter parameter
+    if last_update_post_date:
+        params["lastUpdatePostDate"] = last_update_post_date
     
     try:
         log.debug(f"CTG API call: {CT_API} with params: {params}")

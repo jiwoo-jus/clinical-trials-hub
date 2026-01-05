@@ -44,7 +44,8 @@ class ExtractionPipeline:
         try:
             self.async_client = openai.AsyncOpenAI(
                 api_key=self.api_key,
-                base_url=self.base_url
+                base_url=self.base_url,
+                timeout=180.0  # 3 minutes timeout for long-running extractions
             )
             print("✅ LiteLLM extraction pipeline initialization complete")
         except Exception as e:
@@ -93,14 +94,15 @@ class ExtractionPipeline:
                 print(f'[ExtractionPipeline] Processing {prompt_file} at {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(call_start))}')
                 
                 response_stream = await self.async_client.chat.completions.create(
-                    model="GPT-4o",
+                    model="GPT-5",
                     messages=[
                         {"role": "system", "content": "You are an expert assistant trained to extract structured data in JSON format from clinical trial articles."},
                         {"role": "user", "content": prompt}
                     ],
                     response_format={"type": "json_object"},
                     stream=True,
-                    temperature=0
+                    temperature=1,
+                    seed=42
                 )
                 
                 async for chunk in response_stream:

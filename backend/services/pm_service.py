@@ -1,22 +1,30 @@
-from typing import Dict, List, Optional, Set, Any
-import requests
-import os
-import re
-import time
 import asyncio
 import aiohttp
 import json
+import logging
+import os
+import re
+import requests
+import time
+import traceback
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlencode
-from config import NCBI_TOOL_NAME, NCBI_API_EMAIL, MAX_FETCH_SIZE, NCBI_API_KEY, NCBI_API_INFO
+
 from bs4 import BeautifulSoup
 from rank_bm25 import BM25Okapi
+
+from config import NCBI_API_EMAIL, NCBI_API_INFO, NCBI_API_KEY, NCBI_TOOL_NAME, MAX_FETCH_SIZE
 from .pm_data_parser import parse_pubmed_xml
 from .pm_metadata_extractor import extract_all_metadata_from_pm
 
-print(f"[PM Service] NCBI API Key: {'***' if NCBI_API_KEY else 'Not set'}")
-print(f"[PM Service] NCBI Tool Name: {NCBI_TOOL_NAME}")
-print(f"[PM Service] NCBI API Email: {NCBI_API_EMAIL}")
-print(f"[PM Service] Max Fetch Size: {MAX_FETCH_SIZE}")
+logger = logging.getLogger(__name__)
+
+logger = logging.getLogger(__name__)
+
+logger.info(f"[PM Service] NCBI API Key: {'***' if NCBI_API_KEY else 'Not set'}")
+logger.info(f"[PM Service] NCBI Tool Name: {NCBI_TOOL_NAME}")
+logger.info(f"[PM Service] NCBI API Email: {NCBI_API_EMAIL}")
+logger.info(f"[PM Service] Max Fetch Size: {MAX_FETCH_SIZE}")
 
 # Rate limiting configuration
 MAX_REQUESTS_PER_SECOND = 10 if NCBI_API_KEY else 3
@@ -27,8 +35,10 @@ NCBI_EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
 # Maximum number of PMIDs per request
 ESEARCH_MAX_IDS = 1000  # E-Search can fetch up to 10,000 but we use 1000 for safety
-EFETCH_MAX_IDS = 300   # E-Fetch should be limited to 300 for performance
+EFETCH_MAX_IDS = 200   # E-Fetch reduced to 200 for better stability
 MAX_PMIDS_LIMIT = MAX_FETCH_SIZE  # Use centralized configuration for maximum total PMIDs to fetch
+ESEARCH_RETRY_DELAY = 3  # seconds between retry attempts for E-Search failures
+ESEARCH_MAX_ATTEMPTS = 10  # maximum retry attempts per E-Search page request
 
 # Global rate limiter
 class RateLimiter:
@@ -49,7 +59,7 @@ class RateLimiter:
                 oldest_request = min(self.requests)
                 wait_time = 1.0 - (now - oldest_request)
                 if wait_time > 0:
-                    print(f"Rate limiting: waiting {wait_time:.2f} seconds")
+                    logger.debug(f"Rate limiting: waiting {wait_time:.2f} seconds")
                     await asyncio.sleep(wait_time)
                     # Update now after waiting
                     now = time.time()
@@ -79,7 +89,7 @@ class SyncRateLimiter:
             oldest_request = min(self.requests)
             wait_time = 1.0 - (now - oldest_request)
             if wait_time > 0:
-                print(f"Rate limiting: waiting {wait_time:.2f} seconds")
+                logger.debug(f"Rate limiting: waiting {wait_time:.2f} seconds")
                 time.sleep(wait_time)
                 # Update now after waiting
                 now = time.time()
@@ -91,56 +101,50 @@ class SyncRateLimiter:
 
 sync_rate_limiter = SyncRateLimiter(MAX_REQUESTS_PER_SECOND)
 
-async def search_pm(combined_query, condition_query=None, journal=None, sex=None, age=None, date_from=None, date_to=None, page=1, page_size=10, sort='relevance', sort_order=None):
+async def search_pm(combined_query, condition_query=None, date_from=None, date_to=None, page=1, page_size=10, sort='relevance', sort_order=None):
+    """Search PubMed without pre-filtering (journal, sex, age removed)"""
     try:
         # For search requests, we need to fetch all results then paginate
         # since we want to apply BM25 reranking to all results
         term = combined_query.replace("+", " ")
         if condition_query and condition_query.strip():
             term += f" AND {condition_query}"
-        if journal:
-            term += f' AND "{journal}"[ta]'
-        if sex:
-            term += f' AND {sex}[filter]'
-        if age:
-            term += f' AND {age}[filter]'
         if date_from or date_to:
             df = date_from or "1800/01/01"
             dt = date_to or "3000/01/01"
             term += f' AND ({df}:{dt}[dp])'
         
-        print(f"Searching PubMed with query: {term}")
+        logger.info(f"Searching PubMed with query: {term}")
         
         # Fetch PMIDs using the new paginated approach with limit
-        import time
         start = time.time()
         all_pmids = await fetch_all_pmids_paginated(term, sort=sort, sort_order=sort_order, max_limit=MAX_PMIDS_LIMIT)
         end = time.time()
-        print(f"TIME - fetch pmids - {end-start}s")
+        logger.info(f"TIME - fetch pmids - {end-start:.3f}s")
         total = len(all_pmids)
         
-        print(f"# total PMIDs found: {total}")
+        logger.info(f"# total PMIDs found: {total}")
         
         if not all_pmids:
-            print("No results found in PubMed.")
+            logger.info("No results found in PubMed.")
             return {"results": [], "total": 0, "page": page, "page_size": page_size, "applied_query": term}
 
-        print(f"About to fetch detailed data for {len(all_pmids)} PMIDs")
+        logger.info(f"About to fetch detailed data for {len(all_pmids)} PMIDs")
         
         # Fetch complete data using the unified XML approach
         start = time.time()
         results = await fetch_pubmed_data(all_pmids)
         end = time.time()
-        print(f"TIME - fetch detailed pm data - {end-start}s")
+        logger.info(f"TIME - fetch detailed pm data - {end-start:.3f}s")
         
-        print(f"Successfully fetched detailed data for {len(results)} PMIDs")
+        logger.info(f"Successfully fetched detailed data for {len(results)} PMIDs")
 
         # Extract metadata for each result using the new unified function
         for doc in results:
             try:
                 extract_all_metadata_from_pm(doc)
             except Exception as e:
-                print(f"Error extracting metadata for PMID {doc.get('pmid', 'unknown')}: {e}")
+                logger.error(f"Error extracting metadata for PMID {doc.get('pmid', 'unknown')}: {e}")
                 # If metadata extraction fails, set default values
                 if '_meta' not in doc:
                     doc['_meta'] = {}
@@ -164,9 +168,8 @@ async def search_pm(combined_query, condition_query=None, journal=None, sex=None
             "applied_query": term
         }
     except Exception as e:
-        import traceback
-        print(f"PubMed API error: {str(e)}")
-        print(f"Full traceback: {traceback.format_exc()}")
+        logger.error(f"PubMed API error: {str(e)}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return {"results": [], "total": 0, "page": page, "page_size": page_size, "applied_query": term if 'term' in locals() else combined_query}
 
 async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=None, max_limit: int = MAX_PMIDS_LIMIT) -> List[str]:
@@ -176,8 +179,7 @@ async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=Non
     """
     all_pmids = []
     
-    # First, get the total count with rate limiting
-    await rate_limiter.acquire()
+    # First, get the total count with retry/backoff and rate limiting
     initial_params = {
         "db": "pubmed",
         "term": query,
@@ -187,28 +189,56 @@ async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=Non
         "email": NCBI_API_EMAIL,
         "api_key": NCBI_API_KEY
     }
-    
-    try:
-        response = requests.get(NCBI_ESEARCH, params=initial_params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        # Defensive: check for 'esearchresult' and 'count'
-        if 'esearchresult' not in data or 'count' not in data['esearchresult']:
-            print(f"❌ Unexpected E-Search response structure: {json.dumps(data, indent=2)}")
-            return []
-        total_count = int(data['esearchresult']['count'])
-        print(f"📄 Total PMIDs found in NCBI: {total_count}")
-        
-        if total_count == 0:
-            return []
-        
-        # Apply our limit
-        actual_limit = min(total_count, max_limit)
-        print(f"📄 Will fetch up to {actual_limit} PMIDs (limit: {max_limit})")
-            
-    except Exception as e:
-        print(f"❌ Failed to retrieve total count: {e}")
+
+    total_count: Optional[int] = None
+    for attempt in range(1, ESEARCH_MAX_ATTEMPTS + 1):
+        await rate_limiter.acquire()
+        try:
+            logger.info(f"E-Search initial request (attempt {attempt}/{ESEARCH_MAX_ATTEMPTS}) params: {initial_params}")
+            response = requests.get(NCBI_ESEARCH, params=initial_params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"E-Search initial response (attempt {attempt}): {json.dumps(data, indent=2)}")
+
+            # Check for error strings returned by backend
+            esr = data.get('esearchresult') or {}
+            backend_error = esr.get('ERROR')
+            backend_error_msgs = [
+                "Database is not supported",
+                "Search Backend failed",
+                "address table is empty",
+                "Couldn't resolve",
+            ]
+            if backend_error and any(msg in backend_error for msg in backend_error_msgs):
+                raise RuntimeError(f"Transient backend error: {backend_error}")
+
+            # Defensive: check for 'esearchresult' and 'count'
+            if 'esearchresult' not in data or 'count' not in data['esearchresult']:
+                raise RuntimeError(f"Unexpected response structure: {json.dumps(data, indent=2)}")
+
+            total_count = int(data['esearchresult']['count'])
+            logger.info(f"📄 Total PMIDs found in NCBI (attempt {attempt}): {total_count}")
+            break
+
+        except Exception as e:
+            if attempt < ESEARCH_MAX_ATTEMPTS:
+                logger.warning(f"⚠️ Initial E-Search count attempt {attempt}/{ESEARCH_MAX_ATTEMPTS} failed: {e}; retrying in {ESEARCH_RETRY_DELAY}s")
+                await asyncio.sleep(ESEARCH_RETRY_DELAY)
+                continue
+            else:
+                logger.error(f"❌ Failed to retrieve total count after {ESEARCH_MAX_ATTEMPTS} attempts: {e}")
+                return []
+
+    if total_count is None:
         return []
+
+    if total_count == 0:
+        logger.info("📄 Total PMIDs found in NCBI: 0")
+        return []
+
+    # Apply our limit
+    actual_limit = min(total_count, max_limit)
+    logger.info(f"📄 Will fetch up to {actual_limit} PMIDs (limit: {max_limit})")
     
     # Now fetch PMIDs in chunks with sequential processing (no concurrency)
     try:
@@ -217,16 +247,12 @@ async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=Non
             for start_pos in range(0, actual_limit, ESEARCH_MAX_IDS):
                 # Don't exceed our limit
                 if len(all_pmids) >= max_limit:
-                    print(f"✅ Reached maximum limit of {max_limit} PMIDs")
+                    logger.info(f"✅ Reached maximum limit of {max_limit} PMIDs")
                     break
-                
-                # Rate limit each request
-                await rate_limiter.acquire()
-                
-                # Calculate how many to fetch in this request
+                # Calculate how many to fetch in this request (respect remaining limit)
                 remaining = max_limit - len(all_pmids)
                 fetch_count = min(ESEARCH_MAX_IDS, remaining)
-                
+
                 params = {
                     "db": "pubmed",
                     "term": query,
@@ -240,41 +266,78 @@ async def fetch_all_pmids_paginated(query: str, sort='relevance', sort_order=Non
                 }
                 if sort_order:
                     params["sort_order"] = sort_order
-                
-                try:
-                    async with session.get(NCBI_ESEARCH, params=params, timeout=15) as response:
-                        response.raise_for_status()
-                        data = await response.json()
-                        pmids = data['esearchresult']['idlist']
-                        all_pmids.extend(pmids)
-                        print(f"✅ Retrieved {len(pmids)} PMIDs (start={start_pos}, total so far: {len(all_pmids)})")
-                        
-                        if not pmids:  # No more results
+
+                pmids: List[str] = []
+                # Retry loop for transient backend errors / empty idlist
+                for attempt in range(1, ESEARCH_MAX_ATTEMPTS + 1):
+                    # Rate limit each attempt
+                    await rate_limiter.acquire()
+                    try:
+                        async with session.get(NCBI_ESEARCH, params=params, timeout=30) as response:
+                            logger.debug(f"Fetching E-Search PMIDs (attempt {attempt}/{ESEARCH_MAX_ATTEMPTS}): params={params}")
+                            response.raise_for_status()
+                            data = await response.json()
+                            logger.debug(f"E-Search response (attempt {attempt}): {json.dumps(data, indent=2)}")
+
+                            esearch_result = data.get('esearchresult') or {}
+                            pmids = esearch_result.get('idlist') or []
+
+                            # Detect backend transient failure messages
+                            backend_error_msgs = [
+                                "address table is empty",
+                                "Couldn't resolve",
+                                "Search Backend failed",
+                            ]
+                            raw_text = json.dumps(data, ensure_ascii=False)
+                            transient_error = any(msg in raw_text for msg in backend_error_msgs)
+
+                            if transient_error:
+                                raise RuntimeError("Transient PubMed backend error detected")
+
+                            if not pmids:
+                                # Empty idlist might be transient; retry unless last attempt
+                                if attempt < ESEARCH_MAX_ATTEMPTS:
+                                    logger.warning(f"Empty idlist at start={start_pos} (attempt {attempt}); retrying in {ESEARCH_RETRY_DELAY}s")
+                                    await asyncio.sleep(ESEARCH_RETRY_DELAY)
+                                    continue
+                                else:
+                                    logger.warning(f"Empty idlist after {ESEARCH_MAX_ATTEMPTS} attempts at start={start_pos}; stopping pagination.")
+                                    break
+
+                            # Success path
+                            all_pmids.extend(pmids)
+                            logger.info(f"✅ Retrieved {len(pmids)} PMIDs (start={start_pos}, attempt {attempt}, total so far: {len(all_pmids)})")
+                            break  # exit retry loop
+
+                    except Exception as e:
+                        if attempt < ESEARCH_MAX_ATTEMPTS:
+                            logger.warning(f"⚠️ E-Search error at retstart={start_pos} attempt {attempt}/{ESEARCH_MAX_ATTEMPTS}: {e}; retrying in {ESEARCH_RETRY_DELAY}s")
+                            await asyncio.sleep(ESEARCH_RETRY_DELAY)
+                            continue
+                        else:
+                            logger.error(f"❌ E-Search failed after {ESEARCH_MAX_ATTEMPTS} attempts at retstart={start_pos}: {e}")
+                            pmids = []
                             break
-                        
-                        # Check if we've reached our limit
-                        if len(all_pmids) >= max_limit:
-                            print(f"✅ Reached maximum limit of {max_limit} PMIDs")
-                            break
-                            
-                except Exception as e:
-                    print(f"⚠️ Error at retstart={start_pos}: {e}")
-                    # For 429 errors or other API errors, wait longer before continuing
-                    if "429" in str(e) or "Invalid control character" in str(e):
-                        print("API error detected, waiting 2 seconds...")
-                        await asyncio.sleep(2)
-                    continue
+
+                # If we exhausted attempts without pmids, stop pagination early
+                if not pmids:
+                    break
+
+                # Check if we've reached our overall limit
+                if len(all_pmids) >= max_limit:
+                    logger.info(f"✅ Reached maximum limit of {max_limit} PMIDs")
+                    break
                     
     except ImportError:
         # Fallback to synchronous requests if aiohttp is not available
-        print("aiohttp not available, falling back to synchronous E-Search")
+        logger.warning("aiohttp not available, falling back to synchronous E-Search")
         all_pmids = _fetch_all_pmids_sync(query, sort, sort_order, actual_limit, max_limit)
     
     # Ensure we don't exceed the limit
     if len(all_pmids) > max_limit:
         all_pmids = all_pmids[:max_limit]
     
-    print(f"🎉 Done. Total collected PMIDs: {len(all_pmids)} (limit: {max_limit})")
+    logger.info(f"🎉 Done. Total collected PMIDs: {len(all_pmids)} (limit: {max_limit})")
     return all_pmids
 
 def _fetch_all_pmids_sync(query: str, sort: str, sort_order: Optional[str], total_count: int, max_limit: int) -> List[str]:
@@ -285,7 +348,7 @@ def _fetch_all_pmids_sync(query: str, sort: str, sort_order: Optional[str], tota
     for start_pos in range(0, actual_limit, ESEARCH_MAX_IDS):
         # Don't exceed our limit
         if len(all_pmids) >= max_limit:
-            print(f"✅ Reached maximum limit of {max_limit} PMIDs")
+            logger.info(f"✅ Reached maximum limit of {max_limit} PMIDs")
             break
         
         # Apply rate limiting
@@ -316,22 +379,22 @@ def _fetch_all_pmids_sync(query: str, sort: str, sort_order: Optional[str], tota
             pmids = data['esearchresult']['idlist']
             
             if not pmids:
-                print("✅ Retrieval complete.")
+                logger.info("✅ Retrieval complete.")
                 break
                 
             all_pmids.extend(pmids)
-            print(f"✅ Retrieved {len(pmids)} PMIDs (start={start_pos}, total so far: {len(all_pmids)})")
+            logger.info(f"✅ Retrieved {len(pmids)} PMIDs (start={start_pos}, total so far: {len(all_pmids)})")
             
             # Check if we've reached our limit
             if len(all_pmids) >= max_limit:
-                print(f"✅ Reached maximum limit of {max_limit} PMIDs")
+                logger.info(f"✅ Reached maximum limit of {max_limit} PMIDs")
                 break
             
         except Exception as e:
-            print(f"⚠️ Error at retstart={start_pos}: {e}")
+            logger.warning(f"⚠️ Error at retstart={start_pos}: {e}")
             # For 429 errors or other API errors, wait longer before continuing
             if "429" in str(e) or "Invalid control character" in str(e):
-                print("API error detected, waiting 2 seconds...")
+                logger.warning("API error detected, waiting 2 seconds...")
                 time.sleep(2)
             continue
     
@@ -466,27 +529,55 @@ async def _fetch_with_aiohttp(url: str, params: Dict, session: aiohttp.ClientSes
         async with session.get(url, params=params, timeout=15) as response:
             response.raise_for_status()
             text = await response.text()
-            print(f"Fetched {url}. | # PMIDS in params: {len(params['id'].split(','))}")
+            logger.debug(f"Fetched {url}. | # PMIDS in params: {len(params['id'].split(','))}")
             return text
     except Exception as e:
-        print(f"Error fetching {url}: {str(e)}")
+        logger.error(f"Error fetching {url}: {str(e)}")
         return ""
 
-def _fetch_with_requests(url: str, params: Dict) -> str:
-    """Helper to make a synchronous HTTP request with rate limiting."""
+def _fetch_with_requests(url: str, params: Dict, max_retries: int = 3) -> str:
+    """Helper to make a synchronous HTTP request with rate limiting and retry logic."""
     params["api_key"] = NCBI_API_KEY
     
-    # Apply rate limiting
-    sync_rate_limiter.acquire()
+    for attempt in range(max_retries):
+        try:
+            # Apply rate limiting
+            sync_rate_limiter.acquire()
+            
+            response = requests.get(url, params=params, timeout=30, stream=False)
+            response.raise_for_status()
+            
+            # Read content fully to avoid transfer encoding issues
+            content = response.text
+            
+            if not content or len(content) < 100:  # Sanity check
+                logger.warning(f"Received suspiciously short response ({len(content)} bytes), attempt {attempt + 1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+            
+            logger.debug(f"✅ Fetched {url} | # PMIDs: {len(params['id'].split(','))} | Size: {len(content)} bytes")
+            return content
+            
+        except requests.exceptions.ChunkedEncodingError as e:
+            logger.warning(f"⚠️ ChunkedEncodingError on attempt {attempt + 1}/{max_retries}: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                continue
+            else:
+                logger.error(f"❌ Failed after {max_retries} attempts due to ChunkedEncodingError")
+                return ""
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Error fetching {url} on attempt {attempt + 1}/{max_retries}: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                logger.error(f"❌ Failed after {max_retries} attempts: {str(e)}")
+                return ""
     
-    try:
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        print(f"Fetched {url} | # PMIDs: {len(params['id'].split(','))}")
-        return response.text
-    except Exception as e:
-        print(f"Error fetching {url}: {str(e)}")
-        return ""
+    return ""
 
 def chunk_pmids(pmids, n):
     k, m = divmod(len(pmids), n)
@@ -508,7 +599,7 @@ async def fetch_single_subchunk(chunk_ids, api_info, session):
             response.raise_for_status()
             xml_content = await response.text()
     except Exception as e:
-        print(f"Error fetching {url}: {str(e)}")
+        logger.error(f"Error fetching {url}: {str(e)}")
         return []
     if not xml_content:
         return []
@@ -579,7 +670,7 @@ async def fetch_pubmed_data(pmids: List[str]) -> List[Dict]:
     if not pmids:
         return []
 
-    print(f"Starting fetch_pubmed_data for {len(pmids)} PMIDs")
+    logger.info(f"Starting fetch_pubmed_data for {len(pmids)} PMIDs")
     results = []
 
     try:
@@ -673,15 +764,15 @@ async def fetch_pubmed_data(pmids: List[str]) -> List[Dict]:
         """
     except ImportError:
         # Fallback to synchronous requests
-        print("aiohttp not available, falling back to synchronous requests")
+        logger.warning("aiohttp not available, falling back to synchronous requests")
         results = _fetch_pubmed_data_sync(pmids)
 
-    print(f"fetch_pubmed_data completed: {len(results)} results")
+    logger.info(f"fetch_pubmed_data completed: {len(results)} results")
     return results
 
 def _fetch_pubmed_data_sync(pmids: List[str]) -> List[Dict]:
     """Synchronous fallback for fetching PubMed data with proper rate limiting."""
-    print(f"Starting sync fetch for {len(pmids)} PMIDs")
+    logger.info(f"Starting sync fetch for {len(pmids)} PMIDs")
     results = []
     
     total_chunks = (len(pmids) + EFETCH_MAX_IDS - 1) // EFETCH_MAX_IDS
@@ -689,7 +780,7 @@ def _fetch_pubmed_data_sync(pmids: List[str]) -> List[Dict]:
     for i in range(0, len(pmids), EFETCH_MAX_IDS):
         chunk_ids = pmids[i:i + EFETCH_MAX_IDS]
         chunk_num = i // EFETCH_MAX_IDS + 1
-        print(f"Fetching XML data for chunk {chunk_num}/{total_chunks} with {len(chunk_ids)} PMIDs")
+        logger.info(f"Fetching XML data for chunk {chunk_num}/{total_chunks} with {len(chunk_ids)} PMIDs")
         
         params = {
             "db": "pubmed",
@@ -701,13 +792,13 @@ def _fetch_pubmed_data_sync(pmids: List[str]) -> List[Dict]:
         
         xml_content = _fetch_with_requests(NCBI_EFETCH, params)
         if not xml_content:
-            print(f"Warning: No XML content returned for chunk {chunk_num}")
+            logger.warning(f"Warning: No XML content returned for chunk {chunk_num}")
             continue
         
         try:
             # Parse XML and convert to our standard format
             parsed_data = parse_pubmed_xml(xml_content)
-            print(f"Parsed {len(parsed_data)} records from chunk {chunk_num}")
+            logger.info(f"Parsed {len(parsed_data)} records from chunk {chunk_num}")
             
             chunk_results = 0
             for pmid in chunk_ids:
@@ -751,15 +842,15 @@ def _fetch_pubmed_data_sync(pmids: List[str]) -> List[Dict]:
                     results.append(result)
                     chunk_results += 1
                 else:
-                    print(f"Warning: PMID {pmid} not found in parsed XML for chunk {chunk_num}")
+                    logger.warning(f"Warning: PMID {pmid} not found in parsed XML for chunk {chunk_num}")
             
-            print(f"Chunk {chunk_num} completed: {chunk_results} results (total so far: {len(results)})")
+            logger.info(f"Chunk {chunk_num} completed: {chunk_results} results (total so far: {len(results)})")
                     
         except Exception as e:
-            print(f"Error processing XML for chunk {chunk_num}: {str(e)}")
+            logger.error(f"Error processing XML for chunk {chunk_num}: {str(e)}")
             continue
     
-    print(f"Sync processing completed: {len(results)} total results")
+    logger.info(f"Sync processing completed: {len(results)} total results")
     return results
 
 # Export the functions that are used by other modules
@@ -783,5 +874,5 @@ class PMService:
                 return results[0]
             return None
         except Exception as e:
-            print(f"Error fetching PM details for {pmid}: {str(e)}")
+            logger.error(f"Error fetching PM details for {pmid}: {str(e)}")
             return None

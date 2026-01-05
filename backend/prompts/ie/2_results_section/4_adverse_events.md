@@ -18,7 +18,7 @@ Format:
         "allCauseMortalityComment": // Explanation about mortality data: TEXT
         "eventGroups": [ // ARRAY of OBJECT - Study arms/groups for AE reporting
             {{
-                "id": // Group identifier (e.g., "EG000"): TEXT
+                "id": // Unique group identifier. EG000 is the first group, EG001 is the second, and so on: TEXT
                 "title": // Group name: TEXT (max 1500 chars)
                 "description": // Group description: TEXT
                 "deathsNumAffected": // Number affected by all-cause mortality: TEXT

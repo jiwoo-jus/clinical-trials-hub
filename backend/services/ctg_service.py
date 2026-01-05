@@ -18,86 +18,18 @@ def _pg():
         dbname=os.getenv("DB_NAME", "trials"),
     )
 
-def _fetch_ctg_details(ids: List[str], gender: Optional[str] = None, 
-                      ages: Optional[str] = None, sponsor: Optional[str] = None, 
-                      location: Optional[str] = None, status: Optional[Union[str, List[str]]] = None,
-                      phase: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Fetch CTG study details from AACT database with accurate filters"""
+def _fetch_ctg_details(ids: List[str]) -> List[Dict[str, Any]]:
+    """Fetch CTG study details from AACT database using optimized subqueries"""
     if not ids:
         return []
 
-    conditions = ["s.nct_id = ANY(%s)"]
+    # params는 그대로 유지
     params = [ids]
 
-    # Phase filter
-    if phase:
-        conditions.append("s.phase = %s")
-        params.append(phase)
-
-    # Status filter - support either a single status string or a list of statuses
-    if status:
-        print("STATUS - ", status)
-        status_mapping = {
-            'Not yet recruiting': 'Not yet recruiting',
-            'Recruiting': 'Recruiting',
-            'Enrolling by invitation': 'Enrolling by invitation',
-            'Active, not recruiting': 'Active, not recruiting',
-            'Suspended': 'Suspended',
-            'Terminated': 'Terminated',
-            'Completed': 'Completed',
-            'Withdrawn': 'Withdrawn',
-            'Unknown status': 'Unknown status'
-        }
-        # If a list/tuple of statuses is provided, map each and use ANY(array) for Postgres
-        status = status.split(";")
-        if isinstance(status, (list, tuple)):
-            mapped_list = [status_mapping.get(s, s) for s in status]
-            # Use PostgreSQL ANY to compare against an array parameter
-            conditions.append("s.overall_status = ANY(%s)")
-            params.append(mapped_list)
-        else:
-            mapped_status = status_mapping.get(status, status)
-            conditions.append("s.overall_status = %s")
-            params.append(mapped_status)
-
-    # Sponsor filter
-    if sponsor:
-        conditions.append("s.source ILIKE %s")
-        params.append(f"%{sponsor}%")
-
-    # Location filter (using facilities table)
-    location_join = ""
-    if location:
-        location_join = "JOIN ctgov.facilities f ON f.nct_id = s.nct_id"
-        conditions.append("(f.city ILIKE %s OR f.state ILIKE %s OR f.country ILIKE %s)")
-        params.extend([f"%{location}%", f"%{location}%", f"%{location}%"])
-
-    # Gender and age filters (using eligibilities table)
-    eligibility_join = ""
-    if gender or ages:
-        eligibility_join = "JOIN ctgov.eligibilities e ON e.nct_id = s.nct_id"
-        
-        if gender and gender != 'ALL':
-            gender_mapping = {
-                'MALE': 'Male',
-                'FEMALE': 'Female'
-            }
-            mapped_gender = gender_mapping.get(gender, gender)
-            conditions.append("e.gender = %s")
-            params.append(mapped_gender)
-        
-        if ages:
-            # Age filtering logic based on minimum/maximum age
-            if ages == 'Child':
-                conditions.append("(e.minimum_age_num IS NULL OR e.minimum_age_num <= 17)")
-            elif ages == 'Adult':
-                conditions.append("(e.minimum_age_num IS NULL OR e.minimum_age_num <= 64) AND (e.maximum_age_num IS NULL OR e.maximum_age_num >= 18)")
-            elif ages == 'Older Adult':
-                conditions.append("(e.maximum_age_num IS NULL OR e.maximum_age_num >= 65)")
-
-    # Build optimized SQL query
-    sql = f"""
-        SELECT DISTINCT
+    # 🚀 최적화된 SQL: JOIN 폭발을 막기 위해 1:N 관계는 스칼라 서브쿼리(ARRAY)로 변경
+    # GROUP BY와 DISTINCT를 제거하여 Sort 부하를 99% 감소시킴
+    sql = """
+        SELECT
             s.nct_id,
             s.brief_title,
             s.official_title,
@@ -113,79 +45,103 @@ def _fetch_ctg_details(ids: List[str], gender: Optional[str] = None,
             s.enrollment_type,
             COALESCE(bs.description, '') as brief_summary,
             
-            -- Design information
+            -- Design information (1:1 관계는 JOIN 유지)
             d.allocation as design_allocation,
             d.observational_model,
             d.intervention_model,
             d.masking,
             d.primary_purpose,
             
-            -- Location information (countries)
+            -- Location information (countries) - Subquery
             COALESCE(
-                array_agg(DISTINCT f.country) FILTER (WHERE f.country IS NOT NULL),
+                ARRAY(
+                    SELECT DISTINCT country 
+                    FROM ctgov.facilities 
+                    WHERE nct_id = s.nct_id AND country IS NOT NULL
+                ),
                 ARRAY[]::text[]
             ) as countries,
             
-            -- Aggregate related data
+            -- Conditions - Subquery
             COALESCE(
-                array_agg(DISTINCT c.name) FILTER (WHERE c.name IS NOT NULL),
+                ARRAY(
+                    SELECT DISTINCT name 
+                    FROM ctgov.conditions 
+                    WHERE nct_id = s.nct_id AND name IS NOT NULL
+                ),
                 ARRAY[]::text[]
             ) as conditions,
             
+            -- Keywords - Subquery
             COALESCE(
-                array_agg(DISTINCT k.name) FILTER (WHERE k.name IS NOT NULL),
+                ARRAY(
+                    SELECT DISTINCT name 
+                    FROM ctgov.keywords 
+                    WHERE nct_id = s.nct_id AND name IS NOT NULL
+                ),
                 ARRAY[]::text[]
             ) as keywords,
             
+            -- PMIDs - Subquery
             COALESCE(
-                array_agg(DISTINCT sr.pmid) FILTER (WHERE sr.pmid IS NOT NULL),
+                ARRAY(
+                    SELECT DISTINCT pmid 
+                    FROM ctgov.study_references 
+                    WHERE nct_id = s.nct_id AND pmid IS NOT NULL
+                ),
                 ARRAY[]::text[]
             ) as pmids,
             
+            -- Primary Outcomes - Subquery
             COALESCE(
-                array_agg(DISTINCT po.title) FILTER (WHERE po.title IS NOT NULL),
+                ARRAY(
+                    SELECT DISTINCT title 
+                    FROM ctgov.outcomes 
+                    WHERE nct_id = s.nct_id AND outcome_type = 'primary' AND title IS NOT NULL
+                ),
                 ARRAY[]::text[]
             ) as primary_outcomes,
             
+            -- Secondary Outcomes - Subquery
             COALESCE(
-                array_agg(DISTINCT so.title) FILTER (WHERE so.title IS NOT NULL),
+                ARRAY(
+                    SELECT DISTINCT title 
+                    FROM ctgov.outcomes 
+                    WHERE nct_id = s.nct_id AND outcome_type = 'secondary' AND title IS NOT NULL
+                ),
                 ARRAY[]::text[]
             ) as secondary_outcomes,
             
-            -- Intervention information
+            -- Intervention information - Subquery
             COALESCE(
-                array_agg(DISTINCT i.name) FILTER (WHERE i.name IS NOT NULL),
+                ARRAY(
+                    SELECT DISTINCT name 
+                    FROM ctgov.interventions 
+                    WHERE nct_id = s.nct_id AND name IS NOT NULL
+                ),
                 ARRAY[]::text[]
             ) as intervention_names,
             
-            -- Sponsor information
+            -- Collaborators - Subquery
             COALESCE(
-                array_agg(DISTINCT sp.name) FILTER (WHERE sp.name IS NOT NULL AND sp.lead_or_collaborator = 'collaborator'),
+                ARRAY(
+                    SELECT DISTINCT name 
+                    FROM ctgov.sponsors 
+                    WHERE nct_id = s.nct_id AND lead_or_collaborator = 'collaborator' AND name IS NOT NULL
+                ),
                 ARRAY[]::text[]
             ) as collaborators
             
         FROM ctgov.studies s
-        {eligibility_join}
+        -- 1:1 관계인 테이블만 JOIN (데이터 뻥튀기 없음)
         LEFT JOIN ctgov.designs d ON d.nct_id = s.nct_id
-        LEFT JOIN ctgov.facilities f ON f.nct_id = s.nct_id {location_join.replace('JOIN ctgov.facilities f ON f.nct_id = s.nct_id', '') if location_join else ''}
         LEFT JOIN ctgov.brief_summaries bs ON bs.nct_id = s.nct_id
-        LEFT JOIN ctgov.conditions c ON c.nct_id = s.nct_id
-        LEFT JOIN ctgov.keywords k ON k.nct_id = s.nct_id
-        LEFT JOIN ctgov.study_references sr ON sr.nct_id = s.nct_id
-        LEFT JOIN ctgov.outcomes po ON po.nct_id = s.nct_id AND po.outcome_type = 'primary'
-        LEFT JOIN ctgov.outcomes so ON so.nct_id = s.nct_id AND so.outcome_type = 'secondary'
-        LEFT JOIN ctgov.interventions i ON i.nct_id = s.nct_id
-        LEFT JOIN ctgov.sponsors sp ON sp.nct_id = s.nct_id
-        WHERE {' AND '.join(conditions)}
-        GROUP BY s.nct_id, s.brief_title, s.official_title, s.overall_status, 
-                 s.phase, s.source, s.start_date, s.completion_date, s.primary_completion_date, 
-                 s.study_type, s.results_first_submitted_date, s.enrollment, s.enrollment_type, 
-                 bs.description, d.allocation, d.observational_model, d.intervention_model, 
-                 d.masking, d.primary_purpose
+        
+        WHERE s.nct_id = ANY(%s)
+        -- 🚫 GROUP BY 제거: 서브쿼리를 썼기 때문에 이제 GROUP BY가 필요 없습니다!
     """
     
-    log.debug(f"[_fetch_ctg_details] CTG DB query: {sql}")
-    log.debug(f"[_fetch_ctg_details] Number of parameters(nctids) on query: {len(params)}")
+    log.debug(f"[_fetch_ctg_details] Optimized CTG DB query executed.")
 
     try:
         with _pg() as conn:
@@ -269,42 +225,41 @@ def _rerank_with_bm25(query: str, results: List[Dict]) -> List[Dict]:
 
 # ---------- Public API ---------------------------------------------------------
 async def search_ctg(*, term: Optional[str] = None, cond: Optional[str] = None,
-               intr: Optional[str] = None, other_term: Optional[str] = None, study_type: Optional[str] = None,
-               phase: Optional[str] = None, gender: Optional[str] = None, 
-               ages: Optional[str] = None, sponsor: Optional[str] = None, 
-               location: Optional[str] = None, status: Optional[str] = None, 
+               intr: Optional[str] = None, other_term: Optional[str] = None,
+               area_filter: Optional[str] = None,
+               last_update_post_date: Optional[str] = None,
+               overall_status: Optional[str] = None,
                page_size: int = 25, page_token: Optional[str] = None,
                fetch_all: bool = False) -> Dict[str, Any]:
     """
-    Search ClinicalTrials.gov using API for IDs and database for details with proper filters
+    Search ClinicalTrials.gov using API for IDs and database for details without pre-filtering
+    
+    Args:
+        term: General search term
+        cond: Condition/disease
+        intr: Intervention
+        other_term: Additional search terms
+        area_filter: AREA filter string (e.g., 'AREA[protocolSection.designModule.studyType] Interventional')
+        last_update_post_date: Date range filter (e.g., '2023-01-01_2024-12-31')
+        overall_status: Status filter (e.g., 'RECRUITING', 'RECRUITING|COMPLETED')
+        page_size: Results per page
+        page_token: Pagination token
+        fetch_all: Whether to fetch all results
     """
     try:
         # Step 1: Get study IDs from CTG API
-        log.info(f"Searching CTG API with term='{term}', cond='{cond}', intr='{intr}', fetch_all={fetch_all}")
+        log.debug(f"Searching CTG API with term='{term}', cond='{cond}', intr='{intr}', status='{overall_status}', fetch_all={fetch_all}")
         
         if fetch_all:
-            # Fetch all IDs up to limit
-            if phase or study_type or gender or ages or sponsor or location or status:
-                params = {
-                    "cond": cond,
-                    "intr": intr,
-                    "other_term": other_term,
-                    "study_type": study_type,
-                    "phase": phase,
-                    "sex": gender,
-                    "age": ages,
-                    "sponsor": sponsor,
-                    "locStr": location,
-                    "status": status
-                }
-                ids, total, next_token = await get_filtered_ids(params)
-            else:
-                ids, total, next_token = ctg_client.search_ids(
-                    term=term,
-                    cond=cond,
-                    intr=intr,
-                    fetch_all=True
-                )
+            ids, total, next_token = ctg_client.search_ids(
+                term=term,
+                cond=cond,
+                intr=intr,
+                area_filter=area_filter,
+                overall_status=overall_status,
+                last_update_post_date=last_update_post_date,
+                fetch_all=True
+            )
             log.info(f"Fetched {len(ids)} CTG IDs (fetch_all mode)")
         else:
             # Normal paginated search
@@ -312,28 +267,36 @@ async def search_ctg(*, term: Optional[str] = None, cond: Optional[str] = None,
                 term=term,
                 cond=cond,
                 intr=intr,
+                area_filter=area_filter,
+                last_update_post_date=last_update_post_date,
                 page_size=page_size,
                 page_token=page_token
             )
         
         if not ids:
+            # Build the full query string showing what was actually searched
+            full_query_parts = []
+            if cond:
+                full_query_parts.append(f"Condition: {cond}")
+            if intr:
+                full_query_parts.append(f"Intervention: {intr}")
+            if other_term:
+                full_query_parts.append(f"Other terms: {other_term}")
+            if area_filter:
+                full_query_parts.append(f"AREA Filters: {area_filter}")
+            if overall_status:
+                full_query_parts.append(f"Status: {overall_status}")
+            full_query = " | ".join(full_query_parts) if full_query_parts else ""
+            
             return {
                 "results": [],
                 "total": 0,
                 "nextPageToken": None,
-                "applied_query": term or ""
+                "applied_query": full_query
             }
         
-        # Step 2: Get details from database with filters
-        db_results = _fetch_ctg_details(
-            ids=ids, 
-           # gender=gender, 
-           # ages=ages, 
-           # sponsor=sponsor, 
-            location=location, 
-           # status=status,
-           # phase=phase
-        )
+        # Step 2: Get details from database without pre-filters
+        db_results = _fetch_ctg_details(ids=ids)
         
         # Step 3: Format results (same as before)
         formatted_results = []
@@ -353,6 +316,7 @@ async def search_ctg(*, term: Optional[str] = None, cond: Optional[str] = None,
                 "source": "CTG",
                 "type": "CTG",  # Add type field for filtering
                 "id": row["nct_id"],
+                "nct_id": row["nct_id"],  # Keep nct_id for filter stats calculation
                 "title": row.get("brief_title") or "",
                 "official_title": row.get("official_title") or "",
                 "status": row.get("overall_status") or "",
@@ -386,87 +350,59 @@ async def search_ctg(*, term: Optional[str] = None, cond: Optional[str] = None,
             for result in formatted_results:
                 result["bm25_score"] = None
         
+        # Build the full query string showing what was actually searched
+        log.debug(f"🔍 Building applied_query: cond={cond}, intr={intr}, term={term}, other_term={other_term}, area_filter={area_filter}, overall_status={overall_status}")
+        full_query_parts = []
+        if cond:
+            full_query_parts.append(f"Condition: {cond}")
+        if intr:
+            full_query_parts.append(f"Intervention: {intr}")
+        # Use term if other_term is not provided (common in filter endpoint)
+        if other_term:
+            full_query_parts.append(f"Other terms: {other_term}")
+        elif term and not cond and not intr:
+            # If only term is provided without cond/intr, use it as main query
+            full_query_parts.append(f"Query: {term}")
+        if area_filter:
+            full_query_parts.append(f"AREA Filters: {area_filter}")
+        if overall_status:
+            full_query_parts.append(f"Status: {overall_status}")
+        full_query = " | ".join(full_query_parts) if full_query_parts else (term or "")
+        log.info(f"✅ Built applied_query: {full_query}")
+        
         return {
             "results": formatted_results,
             "total": total,
             "nextPageToken": next_token,
-            "applied_query": term or ""
+            "applied_query": full_query
         }
         
     except Exception as e:
         log.error(f"CTG search failed: {e}")
+        # Build the full query string for error case too
+        full_query_parts = []
+        if cond:
+            full_query_parts.append(f"Condition: {cond}")
+        if intr:
+            full_query_parts.append(f"Intervention: {intr}")
+        # Use term if other_term is not provided (common in filter endpoint)
+        if other_term:
+            full_query_parts.append(f"Other terms: {other_term}")
+        elif term and not cond and not intr:
+            # If only term is provided without cond/intr, use it as main query
+            full_query_parts.append(f"Query: {term}")
+        if area_filter:
+            full_query_parts.append(f"AREA Filters: {area_filter}")
+        if overall_status:
+            full_query_parts.append(f"Status: {overall_status}")
+        full_query = " | ".join(full_query_parts) if full_query_parts else (term or "")
+        
         return {
             "results": [],
             "total": 0,
             "nextPageToken": None,
-            "applied_query": term or ""
+            "applied_query": full_query
         }
-
-async def get_filtered_ids(data: dict) -> List[str]:
-    gender_mapping = {
-        'MALE': 'm',
-        'FEMALE': 'f'
-    }
-    phase_mapping = {
-        '0': '0',
-        '1': '1',
-        '2':'2',
-        '3': '3',
-        '4': '4',
-    }
-    types_mapping = {
-        "Interventional": "int" ,
-        "Observational": "obs" ,
-        "Expanded Access": "exp"
-    }
-    sponsor_mapping = {
-        "NIH": "nih" ,
-        "U.S. federal agency": "fed" ,
-        "Industry": "industry",
-        "All others (individuals, universities, organizations)": "other"
-    }
-
-    refined_params = {
-        "cond": data.get("cond", ""),
-        "intr": data.get("intr", ""),
-        "term": data.get("other_term", ""),
-        "locStr": data.get("locStr", ""),
-        "city": data.get("city", ""),
-        "state": data.get("state", ""),
-        "country": data.get("country", ""),
-        "other_term": data.get("other_term", ""),
-        "aggFilters": []
-    }
-    # Transform mapped fields
-    if data.get("sex") in gender_mapping:
-        refined_params["aggFilters"].append(f"sex:{gender_mapping[data['sex']]}")
-    if data.get("age"):
-        refined_params["aggFilters"].append(f"ages:{data['age'].lower()}")
-    
-    if data.get("phase"):
-        phases = []
-        for p in data['phase']:
-            if p in phase_mapping:
-                phases.append(phase_mapping[p])
-        refined_params["aggFilters"].append(f"phase:{' '.join(phases)}")
-    if data.get("study_type"):
-        types = []
-        for t in data['study_type']:
-            if t in types_mapping:
-                types.append(types_mapping[t])
-        refined_params["aggFilters"].append(f"studyType:{' '.join(types)}")
-    if data.get("sponsor"):
-        spons = []
-        for s in data['sponsor']:
-            if s in sponsor_mapping:
-                spons.append(sponsor_mapping[s])
-        refined_params["aggFilters"].append(f"funderType:{' '.join(spons)}")
-
-    # Status is always "not rec"
-    if data.get("status", "") == "Recruiting and not yet recruiting":
-        refined_params["aggFilters"].append("status:not rec")
-    ids = await ctg_client.get_ctg_ids_from_patient_search(refined_params)
-    return ids, len(ids), None
 
 async def get_patient_results(data: dict) -> List[str]:
     gender_mapping = {
@@ -553,6 +489,7 @@ async def get_patient_results(data: dict) -> List[str]:
                 "source": "CTG",
                 "type": "CTG",  # Add type field for filtering
                 "id": row["nct_id"],
+                "nct_id": row["nct_id"],  # Keep nct_id for filter stats calculation
                 "title": row.get("brief_title") or "",
                 "official_title": row.get("official_title") or "",
                 "status": row.get("overall_status") or "",

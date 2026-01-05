@@ -1,15 +1,28 @@
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from services import ctg_service, ctg_client, pmc_service
 from services.extraction.extraction_pipeline import get_extraction_pipeline
 from services.extraction.extraction_logger import get_extraction_logger
 from services.validation.validation_pipeline import ValidationPipeline
 from services.validation.validation_types import ValidationConfig, ValidationContext
+from services.systematic_review_service import SystematicReviewService
 import json
 import time
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+class SystematicReviewRequest(BaseModel):
+    """Request model for systematic review eligibility checking"""
+    study_id: str  # Can be PMCID or NCT ID
+    study_type: str = "PMC"  # "PMC" or "CTG"
+    text_content: Optional[str] = None  # Optional: pre-extracted text content from frontend
+    inclusion_criteria: List[str] = []
+    exclusion_criteria: List[str] = []
 
 async def extract_with_validation(pmc_id: str, paper_content: str) -> dict:
     extraction_pipeline = get_extraction_pipeline()
@@ -203,9 +216,100 @@ async def get_structured_info(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/ctg_detail")
-async def get_ctg_detail(nctId: str):
+async def get_ctg_detail(
+    nctId: Optional[str] = Query(None, description="NCT ID (preferred param name)"),
+    nct_id: Optional[str] = Query(None, description="Alternative param name: nct_id"),
+    nctid: Optional[str] = Query(None, description="Alternative param name: nctid"),
+    id: Optional[str] = Query(None, description="Fallback param name: id")
+):
     try:
-        detail = ctg_client.get_ctg_detail(nctId)
-        return {"nctId": nctId, "structured_info": detail, "full_text": ""}
+        effective_nctid = nctId or nct_id or nctid or id
+        if not effective_nctid:
+            raise HTTPException(
+                status_code=422,
+                detail="Missing NCT identifier. Provide one of: nctId, nct_id, nctid, id"
+            )
+        detail = ctg_client.get_ctg_detail(effective_nctid)
+        return {"nctId": effective_nctid, "structured_info": detail, "full_text": ""}
+    except HTTPException:
+        raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/check_systematic_review")
+async def check_systematic_review(body: SystematicReviewRequest):
+    """
+    Check if a study meets systematic review inclusion/exclusion criteria.
+    
+    This endpoint analyzes a paper's abstract or clinical trial description against 
+    user-defined eligibility criteria and returns compliance status, confidence scores, 
+    and evidence for each criterion.
+    
+    Args:
+        body: Request containing:
+            - study_id: PMCID (e.g., "PMC9669925") or NCT ID (e.g., "NCT01740206")
+            - study_type: "PMC" for PubMed papers or "CTG" for clinical trials
+            - inclusion_criteria: List of inclusion criteria
+            - exclusion_criteria: List of exclusion criteria
+        
+    Returns:
+        Dictionary with:
+        - study_id: The study identifier
+        - study_type: Type of study (PMC or CTG)
+        - inclusion_results: Assessment of each inclusion criterion
+        - exclusion_results: Assessment of each exclusion criterion
+        - overall_recommendation: INCLUDE/EXCLUDE/UNCLEAR
+        - summary: Summary statistics
+    """
+    try:
+        # Validate that study_id is provided
+        if not body.study_id:
+            raise HTTPException(status_code=422, detail="study_id is required")
+        
+        # Validate study_type
+        if body.study_type.upper() not in ["PMC", "CTG"]:
+            raise HTTPException(status_code=422, detail="study_type must be 'PMC' or 'CTG'")
+        
+        # Check if any criteria provided
+        if not body.inclusion_criteria and not body.exclusion_criteria:
+            return {
+                "study_id": body.study_id,
+                "study_type": body.study_type,
+                "inclusion_results": [],
+                "exclusion_results": [],
+                "overall_recommendation": "UNCLEAR",
+                "summary": {
+                    "inclusion_met": False,
+                    "exclusion_met": False,
+                    "avg_inclusion_confidence": 0.0,
+                    "avg_exclusion_confidence": 0.0,
+                    "has_unclear": True,
+                    "total_criteria": 0,
+                    "unclear_count": 0
+                },
+                "message": "No criteria provided"
+            }
+        
+        # Initialize service and check eligibility
+        review_service = SystematicReviewService()
+        result = await review_service.check_eligibility_criteria(
+            study_id=body.study_id,
+            inclusion_criteria=body.inclusion_criteria,
+            exclusion_criteria=body.exclusion_criteria,
+            study_type=body.study_type,
+            text_content=body.text_content  # Pass pre-extracted text if provided
+        )
+        
+        logger.info(f"✅ Systematic review check completed for {body.study_id} ({body.study_type}): {result['overall_recommendation']}")
+        return result
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # Handle cases where abstract/description cannot be retrieved
+        logger.error(f"Failed to fetch content for {body.study_id}: {e}")
+        raise HTTPException(status_code=404, detail=f"Could not fetch study content: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in systematic review check: {e}")
         raise HTTPException(status_code=500, detail=str(e))

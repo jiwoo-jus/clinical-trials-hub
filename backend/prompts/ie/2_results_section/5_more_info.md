@@ -17,7 +17,7 @@ Format:
         }},
         "certainAgreement": {{
             "piSponsorEmployee": // Whether PIs are sponsor employees: BOOLEAN
-            "restrictionType": // Type of disclosure restriction: ENUM (LTE60, GT60, OTHER)
+            "restrictionType": // Type of disclosure restriction: ENUM ("LTE60", "GT60", "OTHER")
             "restrictiveAgreement": // Whether restrictive agreements exist: BOOLEAN
             "otherDetails": // Details if restriction type is OTHER: TEXT
         }},

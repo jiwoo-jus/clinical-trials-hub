@@ -76,7 +76,7 @@ class ChatService:
             print(f"[ChatService] Template: {prompt_template_name}, User Question: {user_question}")
             
             response = self.client.chat.completions.create(
-                model="GPT-4o",
+                model="gemini-3-pro-preview",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant answering questions based on provided clinical trial information."},
                     {"role": "user", "content": prompt}
@@ -85,6 +85,7 @@ class ChatService:
                 temperature=0
             )
             
+            print(f"[ChatService] Model: {response.model}, Response received.")
             result_text = response.choices[0].message.content.strip()
             
             try:

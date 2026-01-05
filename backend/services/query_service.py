@@ -90,9 +90,13 @@ class QueryService:
             refined_query = response.choices[0].message.content.strip()
             try:
                 parsed = json.loads(refined_query)
+                # Clean None values
+                for key in ['cond', 'intr', 'other_term']:
+                    if parsed.get(key) in ['None', '', None]:
+                        parsed[key] = None
+                return parsed
             except Exception as e:
                 raise Exception("Failed to parse Refined Query response") from e
-            return parsed
             
         except Exception as e:
             print(f"[QueryService] Query refinement error: {e}")

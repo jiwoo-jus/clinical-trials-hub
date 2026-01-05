@@ -17,7 +17,7 @@ Format:
         "typeUnitsAnalyzed": // Unit of analysis (e.g., "Participants", "Eyes", "Lesions"): TEXT
         "groups": [ // ARRAY of OBJECT - Arms/groups in the study flow
             {{
-                "id": // Unique identifier (e.g., "FG000", "FG001"): TEXT
+                "id": // Unique group identifier. FG000 is the first group, FG001 is the second, and so on: TEXT
                 "title": // Short name of the arm/group: TEXT (max 40 chars)
                 "description": // Brief description of the arm/group: TEXT (max 1500 chars)
             }}
