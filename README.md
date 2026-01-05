@@ -95,3 +95,25 @@ npm start
 
 - Frontend: http://localhost:3000
 - Backend API Docs: http://localhost:5050/docs
+
+---
+
+## Citation
+
+If you use this pipeline in your research, please cite:
+
+```bibtex
+@misc{park2025clinicaltrialshubbridgingregistriesliterature,
+      title={ClinicalTrialsHub: Bridging Registries and Literature for Comprehensive Clinical Trial Access}, 
+      author={Jiwoo Park and Ruoqi Liu and Avani Jagdale and Andrew Srisuwananukorn and Jing Zhao and Lang Li and Ping Zhang and Sachin Kumar},
+      year={2025},
+      eprint={2512.08193},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2512.08193}, 
+}
+```
+
+## Contact
+
+For questions or issues, please contact park.3620@osu.edu.
