@@ -2,6 +2,9 @@
 
 A comprehensive platform that integrates PubMed articles and ClinicalTrials.gov data for unified search and analysis with automatic information extraction capabilities.
 
+> **Note:** Code for PMC–CTG sample collection and evaluation pipelines is maintained separately at  
+> https://github.com/jiwoo-jus/clinical-trials-hub-evaluation
+
 ## Prerequisites
 
 - **NCBI API Key**: Register at https://www.ncbi.nlm.nih.gov/account/
