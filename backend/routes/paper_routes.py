@@ -24,11 +24,27 @@ class SystematicReviewRequest(BaseModel):
     inclusion_criteria: List[str] = []
     exclusion_criteria: List[str] = []
 
-async def extract_with_validation(pmc_id: str, paper_content: str) -> dict:
+async def extract_with_validation(
+    pmc_id: str,
+    paper_content: str,
+    prompt_profile: Optional[str] = None,
+    skip_validation: bool = False
+) -> dict:
     extraction_pipeline = get_extraction_pipeline()
     logger = get_extraction_logger()
     
-    structured_info, session_id = await extraction_pipeline.get_structured_info_with_session(pmc_id, paper_content)
+    structured_info, session_id = await extraction_pipeline.get_structured_info_with_session(
+        pmc_id,
+        paper_content,
+        prompt_profile
+    )
+
+    if skip_validation:
+        try:
+            logger.finalize_session(session_id)
+        except Exception as e:
+            print(f"[extract_with_validation] Error finalizing session (skip_validation): {e}")
+        return structured_info
     
     if "_validation" in structured_info:
         print(f"[extract_with_validation] Data already validated for {pmc_id}")
@@ -183,7 +199,9 @@ async def get_structured_info(
         description="Comma-separated NCT IDs or JSON-encoded list provided by client",
     ),
     page: Optional[int] = Query(None, description="Search page (Optional)"),
-    index: Optional[int] = Query(None, description="Index of clicked result in current page (Optional)")
+    index: Optional[int] = Query(None, description="Index of clicked result in current page (Optional)"),
+    prompt_profile: Optional[str] = Query(None, description="Prompt profile for partial extraction (Optional)"),
+    skip_validation: Optional[bool] = Query(False, description="Skip validation pipeline (Optional)")
 ):
     try:
         provided_refs: list[str] = []
@@ -201,7 +219,13 @@ async def get_structured_info(
             structured_info = ctg_client.get_ctg_detail(provided_refs[0])
         else:
             content = pmc_service.get_pmc_full_text_xml(pmcid)
-            structured_info = await extract_with_validation(pmcid, content)
+            effective_skip_validation = bool(skip_validation) or (prompt_profile == "phase1")
+            structured_info = await extract_with_validation(
+                pmcid,
+                content,
+                prompt_profile=prompt_profile,
+                skip_validation=effective_skip_validation
+            )
 
         return {
             "pmcid": pmcid,

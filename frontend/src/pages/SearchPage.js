@@ -443,6 +443,14 @@ const SearchPage = () => {
     setCtgTokenHistory({});
   }, [filters, sourcesString]);
 
+  const isPhase1ClinicalTrial = (publicationTypes = []) => {
+    if (!Array.isArray(publicationTypes)) return false;
+    const normalized = publicationTypes.map((type) => String(type).toLowerCase());
+    const hasClinicalTrial = normalized.some((type) => type.includes('clinical trial'));
+    const hasPhase1 = normalized.some((type) => type.includes('phase i'));
+    return hasClinicalTrial && hasPhase1;
+  };
+
   const handleViewDetails = (item) => {
     detailLogger.debug('[Detail] View details for item:', item);
 
@@ -481,12 +489,19 @@ const SearchPage = () => {
         pubDate: item.pm_data?.pubDate || null,
         ref_nctids: item.ctg_data?.ref_nctids || [item.nctid],
         publication_types: item.pm_data?.publication_types || [],
+        extraction_profile: null,
         page: page,
         index: results?.results?.findIndex(r => r.id === item.id) || 0,
         source: item.source || 'PM'
       };
     } else {
       // Handle regular PM/CTG items
+      const publicationTypes = item.publication_types || [];
+      const extractionProfile =
+        item.type === 'PM' && isPhase1ClinicalTrial(publicationTypes)
+          ? 'phase1'
+          : null;
+
       metadata = {
         type: item.type,
         title: item.title,
@@ -500,7 +515,8 @@ const SearchPage = () => {
         pubDate: item.pubDate || item.date || null,
         structured_info: item.source === 'CTG' ? item.structured_info : null,
         ref_nctids: item.type === 'CTG' ? [] : (item.ref_nctids || []),
-        publication_types: item.publication_types || [],
+        publication_types: publicationTypes,
+        extraction_profile: extractionProfile,
         page: page,
         index: results?.results?.findIndex(r => r.id === item.id) || 0,
         source: item.type

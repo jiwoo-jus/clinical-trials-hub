@@ -20,6 +20,22 @@ const DetailPage = () => {
 
   const currentPmcid = pmcid || metadata.pmcid || '';
 
+  const isPhase1ClinicalTrial = useCallback((publicationTypes = []) => {
+    if (!Array.isArray(publicationTypes)) return false;
+    const normalized = publicationTypes.map((type) => String(type).toLowerCase());
+    const hasClinicalTrial = normalized.some((type) => type.includes('clinical trial'));
+    const hasPhase1 = normalized.some((type) => type.includes('phase i'));
+    return hasClinicalTrial && hasPhase1;
+  }, []);
+
+  const promptProfile = useMemo(() => {
+    if (metadata.extraction_profile) return metadata.extraction_profile;
+    if ((source === 'PM' || source === 'PMC') && metadata.type === 'PM') {
+      return isPhase1ClinicalTrial(metadata.publication_types) ? 'phase1' : null;
+    }
+    return null;
+  }, [metadata, source, isPhase1ClinicalTrial]);
+
   const [structuredInfo, setStructuredInfo] = useState(
     metadata.structured_info || null
   );
@@ -86,7 +102,9 @@ const DetailPage = () => {
           pmid: metadata.pmid,
           ref_nctids: JSON.stringify(metadata.ref_nctids || []),
           page: metadata.page,
-          index: metadata.index
+          index: metadata.index,
+          prompt_profile: promptProfile || undefined,
+          skip_validation: promptProfile === 'phase1'
         })
           .then(res => {
             if (isMounted) {

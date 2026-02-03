@@ -6,7 +6,7 @@ import {
   ObjectTable, Collapsible, PairsList, transformTextToReadableElements
 } from './StructuredInfoFunctions';
 
-const ProtocolSection = ({ data = {} }) => {
+const ProtocolSection = ({ data = {}, visibleBlocks = null }) => {
   const {
     descriptionModule = {}, identificationModule = {},
     conditionsModule = {}, armsInterventionsModule = {},
@@ -84,8 +84,12 @@ const ProtocolSection = ({ data = {} }) => {
   };
   const hasEnrolData = Object.values(enrolData).some(v => v);
 
+  const isBlockVisible = (blockKey) =>
+    !Array.isArray(visibleBlocks) || visibleBlocks.includes(blockKey);
+
   return (
     <div>
+      {isBlockVisible('overview') && (
       <Collapsible title="Study Overview" defaultOpen>
        <div id="ident" className="flex overflow-x-auto mb-1">
           <div className="flex flex-col gap-y-2 mt-1 mb-2">
@@ -127,7 +131,9 @@ const ProtocolSection = ({ data = {} }) => {
         </div>
         </div>
       </Collapsible>
+      )}
 
+      {isBlockVisible('contacts') && (
       <Collapsible title="Contacts and Locations">
         {contactsLocationsModule?.locations && contactsLocationsModule?.locations.length > 0 ? (
           <div>
@@ -157,7 +163,9 @@ const ProtocolSection = ({ data = {} }) => {
           <div className = "text-sm text-custom-text">No locations listed.</div>
         )}
       </Collapsible>
+      )}
 
+      {isBlockVisible('participation') && (
       <Collapsible title="Participation Requirements"> 
         <PlainTextField field="Eligibility Criteria" value={eligibilityModule?.eligibilityCriteria} />
         <PlainTextField field="Enrollment" value={eligibilityModule?.studyPopulation} />
@@ -172,7 +180,9 @@ const ProtocolSection = ({ data = {} }) => {
           </div>
        </div>
       </Collapsible>
+      )}
 
+      {isBlockVisible('studyPlan') && (
       <Collapsible title=" Study Plan">
         <PairsList title="Design Details" obj = { { "Primary Purpose":formatEnum(designModule?.designInfo?.primaryPurpose),
           "Allocation":formatEnum(designModule?.designInfo?.allocation), "Interventional Model":formatEnum(designModule?.designInfo?.interventionModel),
@@ -207,13 +217,17 @@ const ProtocolSection = ({ data = {} }) => {
         <ObjectTable field="Primary Outcomes" data= {outcomesModule?.primaryOutcomes}/>
         <ObjectTable field="Secondary Outcomes" data= {outcomesModule?.secondaryOutcomes}/>
       </Collapsible>
+      )}
 
+      {isBlockVisible('collaborators') && (
       <Collapsible title="Collaborators and Investigators">
        <div className = "mt-1"><ShortTextField field="Lead Sponsor" value={sponsorCollaboratorsModule?.leadSponsor?.name} /></div>
        <ListField field = "Investigators" value = {investigatorList} />  
        <ListField field = "Collaborators" value = {Array.isArray(sponsorCollaboratorsModule.collaborators) ? sponsorCollaboratorsModule.collaborators.map(c => c.name) : []} /> 
       </Collapsible>
+      )}
 
+      {isBlockVisible('publications') && (
       <Collapsible title="Publications">
         { referencesModule?.references ? (
           <>
@@ -243,7 +257,9 @@ const ProtocolSection = ({ data = {} }) => {
           <p className = "text-sm text-custom-text">No references available.</p>
         )}
       </Collapsible>
+      )}
 
+      {isBlockVisible('studyDates') && (
       <Collapsible title="Study Record Dates">
         <div className = " items-center  gap-x-4">
             <div className="font-medium text-sm text-custom-text">Study Registration Dates</div>
@@ -274,15 +290,18 @@ const ProtocolSection = ({ data = {} }) => {
               </div>  
         </div>
       </Collapsible>
+      )}
     </div>
   );
 };
 
 ProtocolSection.propTypes = {
-  data: PropTypes.object
+  data: PropTypes.object,
+  visibleBlocks: PropTypes.arrayOf(PropTypes.string)
 };
 ProtocolSection.defaultProps = {
-  data: {}
+  data: {},
+  visibleBlocks: null
 };
 
 export default ProtocolSection;

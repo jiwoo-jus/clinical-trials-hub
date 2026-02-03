@@ -213,7 +213,12 @@ class ExtractionPipeline:
         recurse(data, prefix)
         return fields
     
-    async def extract_structured_info(self, paper_content: str, session_id: str = None) -> dict:
+    async def extract_structured_info(
+        self,
+        paper_content: str,
+        session_id: str = None,
+        prompt_profile: str | None = None
+    ) -> dict:
         """Extract structured data by asynchronously calling multiple divided prompts"""
         if not self.async_client:
             return {"error": "OpenAI async client not initialized"}
@@ -228,30 +233,41 @@ class ExtractionPipeline:
             logger.log_extraction_start(session_id)
         
         # Grouped prompt folders and final key mapping
-        group_mapping = {
-            "ie/1_protocol_section": "protocolSection",
-            "ie/2_results_section": "resultsSection",
-            "ie/3_derived_section": "derivedSection"
-        }
-        
-        prompt_files = [
-            # Protocol Section
-            "ie/1_protocol_section/1_identification.md",
-            "ie/1_protocol_section/2_description_and_conditions.md",
-            "ie/1_protocol_section/3_design.md",
-            "ie/1_protocol_section/4_arms_interventions.md",
-            "ie/1_protocol_section/5_outcomes.md",
-            "ie/1_protocol_section/6_eligibility.md",
-            
-            # Results Section
-            "ie/2_results_section/1_participantflow.md",
-            "ie/2_results_section/2_baselinecharacteristics.md", 
-            "ie/2_results_section/3_outcomemeasures.md",
-            "ie/2_results_section/4_adverse_events.md",
-            
-            # Derived Section
-            "ie/3_derived_section/1_conditionbrowse_interventionbrowse.md",
-        ]
+        if prompt_profile == "phase1":
+            group_mapping = {
+                "ie/1_protocol_section": "protocolSection",
+                "ie/phase1": "phase1Section"
+            }
+            prompt_files = [
+                "ie/1_protocol_section/1_identification.md",
+                "ie/1_protocol_section/2_description_and_conditions.md",
+                "ie/1_protocol_section/6_eligibility.md",
+                "ie/phase1/1_toxicity.md",
+            ]
+        else:
+            group_mapping = {
+                "ie/1_protocol_section": "protocolSection",
+                "ie/2_results_section": "resultsSection",
+                "ie/3_derived_section": "derivedSection"
+            }
+            prompt_files = [
+                # Protocol Section
+                "ie/1_protocol_section/1_identification.md",
+                "ie/1_protocol_section/2_description_and_conditions.md",
+                "ie/1_protocol_section/3_design.md",
+                "ie/1_protocol_section/4_arms_interventions.md",
+                "ie/1_protocol_section/5_outcomes.md",
+                "ie/1_protocol_section/6_eligibility.md",
+                
+                # Results Section
+                "ie/2_results_section/1_participantflow.md",
+                "ie/2_results_section/2_baselinecharacteristics.md", 
+                "ie/2_results_section/3_outcomemeasures.md",
+                "ie/2_results_section/4_adverse_events.md",
+                
+                # Derived Section
+                "ie/3_derived_section/1_conditionbrowse_interventionbrowse.md",
+            ]
         
         # Initialize aggregated_data for grouped results
         aggregated_data = {}
@@ -302,21 +318,29 @@ class ExtractionPipeline:
         if session_id:
             logger.log_extraction_end(session_id)
         
+        if prompt_profile:
+            aggregated_data["_prompt_profile"] = prompt_profile
         return aggregated_data
     
-    def get_cache_filepath(self, pmc_id: str) -> Path:
+    def get_cache_filepath(self, pmc_id: str, prompt_profile: str | None = None) -> Path:
         """Generate cache file path"""
         # Path to cache directory from services/extraction
         cache_dir = Path(__file__).parent.parent.parent / "cache"
         cache_dir.mkdir(exist_ok=True)
-        return cache_dir / f"{pmc_id}.json"
+        profile_suffix = f"__{prompt_profile}" if prompt_profile else ""
+        return cache_dir / f"{pmc_id}{profile_suffix}.json"
     
-    async def get_structured_info_with_cache(self, pmc_id: str, paper_content: str) -> dict:
+    async def get_structured_info_with_cache(
+        self,
+        pmc_id: str,
+        paper_content: str,
+        prompt_profile: str | None = None
+    ) -> dict:
         """Extract structured information considering cache"""
         logger = get_extraction_logger()
         session_id = logger.start_session(pmc_id)
         
-        cache_file = self.get_cache_filepath(pmc_id)
+        cache_file = self.get_cache_filepath(pmc_id, prompt_profile)
         used_cache = False
         
         if cache_file.exists():
@@ -336,7 +360,7 @@ class ExtractionPipeline:
         logger.log_cache_usage(session_id, used_cache)
         print(f"[ExtractionPipeline] No valid cached data found for {pmc_id}. Generating new data...")
         
-        result = await self.extract_structured_info(paper_content, session_id)
+        result = await self.extract_structured_info(paper_content, session_id, prompt_profile)
         
         try:
             with open(cache_file, "w", encoding="utf-8") as f:
@@ -348,12 +372,17 @@ class ExtractionPipeline:
         # Return session_id for finalization after validation
         return result
     
-    async def get_structured_info_with_session(self, pmc_id: str, paper_content: str) -> tuple[dict, str]:
+    async def get_structured_info_with_session(
+        self,
+        pmc_id: str,
+        paper_content: str,
+        prompt_profile: str | None = None
+    ) -> tuple[dict, str]:
         """Extract structured information considering cache and return session ID"""
         logger = get_extraction_logger()
         session_id = logger.start_session(pmc_id)
         
-        cache_file = self.get_cache_filepath(pmc_id)
+        cache_file = self.get_cache_filepath(pmc_id, prompt_profile)
         used_cache = False
         cache_validation_applied = False
         
@@ -376,7 +405,7 @@ class ExtractionPipeline:
         logger.log_cache_usage(session_id, used_cache, cache_validation_applied)
         print(f"[ExtractionPipeline] No valid cached data found for {pmc_id}. Generating new data...")
         
-        result = await self.extract_structured_info(paper_content, session_id)
+        result = await self.extract_structured_info(paper_content, session_id, prompt_profile)
         
         try:
             with open(cache_file, "w", encoding="utf-8") as f:
@@ -523,19 +552,23 @@ async def process_prompt_file(prompt_file: str, paper_content: str, client=None)
     return await get_extraction_pipeline().process_prompt_file(prompt_file, paper_content)
 
 
-async def extract_structured_info(paper_content: str) -> dict:
+async def extract_structured_info(paper_content: str, prompt_profile: str | None = None) -> dict:
     """Backward compatibility function for extract_structured_info"""
-    return await get_extraction_pipeline().extract_structured_info(paper_content)
+    return await get_extraction_pipeline().extract_structured_info(paper_content, None, prompt_profile)
 
 
-async def get_structured_info_with_cache(pmc_id: str, paper_content: str) -> dict:
+async def get_structured_info_with_cache(
+    pmc_id: str,
+    paper_content: str,
+    prompt_profile: str | None = None
+) -> dict:
     """Backward compatibility function for get_structured_info_with_cache"""
-    return await get_extraction_pipeline().get_structured_info_with_cache(pmc_id, paper_content)
+    return await get_extraction_pipeline().get_structured_info_with_cache(pmc_id, paper_content, prompt_profile)
 
 
-def get_cache_filepath(pmc_id: str) -> Path:
+def get_cache_filepath(pmc_id: str, prompt_profile: str | None = None) -> Path:
     """Backward compatibility function for get_cache_filepath"""
-    return get_extraction_pipeline().get_cache_filepath(pmc_id)
+    return get_extraction_pipeline().get_cache_filepath(pmc_id, prompt_profile)
 
 
 # Alias (Backward compatibility)

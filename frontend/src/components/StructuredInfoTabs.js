@@ -1,11 +1,12 @@
 import PropTypes from 'prop-types';
-import React, { useState } from 'react';
+import React, { useMemo, useEffect, useState } from 'react';
 
 import ProtocolSection from './ProtocolSection';
 import ResultsSection from './ResultSection';
 // import AnnotationSection from './AnnotationSection';
 import DocumentSection from './DocumentSection';
 import DerivedSection from './DerivedSection';
+import Phase1Section from './Phase1Section';
 
 /**
  * StructuredInfoTabs:
@@ -15,15 +16,32 @@ import DerivedSection from './DerivedSection';
  */
 
 const StructuredInfoTabs = ({ structuredInfo }) => {
-  const [active, setActive] = useState('Protocol');
+  const promptProfile = structuredInfo?._prompt_profile || null;
 
-  const tabs = [
-    { key: 'Protocol', label: 'Protocol Section' },
-    { key: 'Results', label: 'Results Section' },
-    // { key: 'Annotation', label: 'Annotation Section' },
-    { key: 'Document', label: 'Document Section' },
-    { key: 'Derived', label: 'Derived Section' },
-  ];
+  const tabs = useMemo(() => {
+    if (promptProfile === 'phase1') {
+      return [
+        { key: 'Protocol', label: 'Protocol Section', show: !!structuredInfo?.protocolSection },
+        { key: 'Phase1', label: 'Phase I Toxicity', show: !!structuredInfo?.phase1Section }
+      ].filter(tab => tab.show);
+    }
+
+    return [
+      { key: 'Protocol', label: 'Protocol Section' },
+      { key: 'Results', label: 'Results Section' },
+      // { key: 'Annotation', label: 'Annotation Section' },
+      { key: 'Document', label: 'Document Section' },
+      { key: 'Derived', label: 'Derived Section' },
+    ];
+  }, [promptProfile, structuredInfo]);
+
+  const [active, setActive] = useState(tabs[0]?.key || 'Protocol');
+
+  useEffect(() => {
+    if (!tabs.find(tab => tab.key === active)) {
+      setActive(tabs[0]?.key || 'Protocol');
+    }
+  }, [tabs, active]);
 
   if (!structuredInfo) return <div>No structured info available.</div>;
 
@@ -61,7 +79,10 @@ const StructuredInfoTabs = ({ structuredInfo }) => {
 
       <div className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden">
         {active === 'Protocol' && (
-          <ProtocolSection data={structuredInfo.protocolSection} />
+          <ProtocolSection
+            data={structuredInfo.protocolSection}
+            visibleBlocks={promptProfile === 'phase1' ? ['overview', 'participation'] : null}
+          />
         )}
         {active === 'Results' && (
           <ResultsSection data={structuredInfo.resultsSection} />
@@ -74,6 +95,9 @@ const StructuredInfoTabs = ({ structuredInfo }) => {
         )}
         {active === 'Derived' && (
           <DerivedSection data={structuredInfo.derivedSection} />
+        )}
+        {active === 'Phase1' && (
+          <Phase1Section data={structuredInfo.phase1Section} />
         )}
       </div>
     </div>
