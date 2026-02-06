@@ -12,6 +12,14 @@ logger = logging.getLogger(__name__)
 class CTGFilterBuilder:
     """Build CTG query.term AREA filters from filter selections"""
     
+    # Browsing mode to phase mapping
+    BROWSING_MODE_PHASES = {
+        'phase1': 'PHASE1',
+        'phase2': 'PHASE2',
+        'phase3': 'PHASE3',
+        'phase4': 'PHASE4',
+    }
+    
     @staticmethod
     def build_study_type_filter(filters: Dict[str, Any]) -> Optional[str]:
         """
@@ -105,7 +113,7 @@ class CTGFilterBuilder:
         return None
     
     @staticmethod
-    def build_combined_filter(filters: Dict[str, Any]) -> Optional[str]:
+    def build_combined_filter(filters: Dict[str, Any], browsing_mode: str = 'expert') -> Optional[str]:
         """
         Build combined filter query by joining all AREA filters with AND.
         Phase and Study Type are treated as separate categories.
@@ -114,11 +122,19 @@ class CTGFilterBuilder:
         
         Args:
             filters: Dictionary with filter selections
+            browsing_mode: Current browsing mode ('expert', 'phase1', 'phase2', etc.)
             
         Returns:
             Combined AREA filter string or None
         """
         filter_parts = []
+        
+        # Apply browsing mode filter if not in expert mode
+        if browsing_mode != 'expert' and browsing_mode in CTGFilterBuilder.BROWSING_MODE_PHASES:
+            phase_value = CTGFilterBuilder.BROWSING_MODE_PHASES[browsing_mode]
+            browsing_mode_filter = f"AREA[protocolSection.designModule.phases] {phase_value}"
+            filter_parts.append(browsing_mode_filter)
+            logger.info(f"[CTGFilter] Applied browsing mode filter '{browsing_mode}': {browsing_mode_filter}")
         
         # Study type filter (Clinical Trial, RCT, Observational)
         study_type_filter = CTGFilterBuilder.build_study_type_filter(filters)

@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import { filterLogger } from '../utils/logger';
 
-const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStats, filters: externalFilters, setFilters: setExternalFilters }) => {
+const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStats, filters: externalFilters, setFilters: setExternalFilters, browsingMode = 'expert' }) => {
   filterLogger.debug('Component rendered with filterStats:', filterStats);
   filterLogger.debug('CTG filters from filterStats:', filterStats?.ctg_filters);
+  filterLogger.debug('Browsing mode:', browsingMode);
 
   // Phase filters - applicable to both PM and CTG
   const PHASE_OPTIONS = [
@@ -191,6 +192,7 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
 
   return (
     <div className="w-full space-y-4">
+      {/* Data Source - Always visible */}
       <div className="bg-custom-bg-soft rounded-lg p-3 border border-custom-border">
         <h4 className="font-semibold mb-2 text-custom-text text-sm">Data Source</h4>
         <div className="space-y-2">
@@ -218,6 +220,7 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
         </div>
       </div>
 
+      {/* Publication Date - Always visible */}
       <div className="bg-custom-bg-soft rounded-lg p-3 border border-custom-border">
         <div className="flex items-center justify-between mb-2">
           <h4 className="font-semibold text-custom-text text-sm">Publication Date</h4>
@@ -308,7 +311,8 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
         </div>
       </div>
 
-      {/* Phase Filters */}
+      {/* Phase Filters - Hide in phase1 mode */}
+      {browsingMode !== 'phase1' && (
       <div className="bg-custom-bg-soft rounded-lg p-3 border border-custom-border">
         <div className="flex items-center justify-between mb-2">
           <h4 className="font-semibold text-custom-text text-sm">Phase</h4>
@@ -361,8 +365,10 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
           })}
         </div>
       </div>
+      )}
 
-      {/* Study Type Filters */}
+      {/* Study Type Filters - Hide in phase1 mode */}
+      {browsingMode !== 'phase1' && (
       <div className="bg-custom-bg-soft rounded-lg p-3 border border-custom-border">
         <div className="flex items-center justify-between mb-2">
           <h4 className="font-semibold text-custom-text text-sm">Study Type</h4>
@@ -415,8 +421,9 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
           })}
         </div>
       </div>
+      )}
 
-      {/* Age Filters */}
+      {/* Age Filters - Always visible */}
       <div className="bg-custom-bg-soft rounded-lg p-3 border border-custom-border">
         <div className="flex items-center justify-between mb-2">
           <h4 className="font-semibold text-custom-text text-sm">Age</h4>
@@ -464,7 +471,7 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
         </div>
       </div>
 
-      {/* PubMed-Only Filters */}
+      {/* PubMed-Only Filters - Always visible */}
       <div className="bg-custom-bg-soft rounded-lg p-3 border border-custom-border">
         <div className="flex items-center justify-between mb-2">
           <h4 className="font-semibold text-custom-text text-sm flex items-center gap-2">
@@ -492,7 +499,7 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
         </div>
         
         {/* PMC Open Access */}
-        <div className="mb-3">
+        <div className={browsingMode === 'phase1' ? '' : 'mb-3'}>
           <label className="flex items-center gap-2 cursor-pointer text-sm">
             <input
               type="checkbox"
@@ -504,7 +511,8 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
           </label>
         </div>
         
-        {/* Article Types */}
+        {/* Article Types - Hide in phase1 mode */}
+        {browsingMode !== 'phase1' && (
         <div className="mb-3">
           <h5 className="font-medium text-custom-text text-xs mb-2">Article Types</h5>
           <div className="space-y-1">
@@ -536,8 +544,10 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
             })}
           </div>
         </div>
+        )}
 
-        {/* Species */}
+        {/* Species - Hide in phase1 mode */}
+        {browsingMode !== 'phase1' && (
         <div className="mb-0">
           <h5 className="font-medium text-custom-text text-xs mb-2">Species</h5>
           <div className="space-y-1">
@@ -569,9 +579,10 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
             })}
           </div>
         </div>
+        )}
       </div>
 
-      {/* CTG-Only Filters */}
+      {/* CTG-Only Filters - Always visible */}
       <div className="bg-custom-bg-soft rounded-lg p-3 border border-custom-border">
         <div className="flex items-center justify-between mb-2">
           <h4 className="font-semibold text-custom-text text-sm flex items-center gap-2">
@@ -595,7 +606,7 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
         </div>
         
         {/* Has Results */}
-        <div className="mb-3">
+        <div className={browsingMode === 'phase1' ? '' : 'mb-3'}>
           {/* <h5 className="font-medium text-custom-text text-xs mb-2">Has Results</h5> */}
           <label className="flex items-center gap-2 cursor-pointer text-sm">
             <input
@@ -615,7 +626,8 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
           </label>
         </div>
 
-        {/* Status */}
+        {/* Status - Hide in phase1 mode */}
+        {browsingMode !== 'phase1' && (
         <div className="mb-0">
           <h5 className="font-medium text-custom-text text-xs mb-2">Status</h5>
           <div className="space-y-1">
@@ -645,10 +657,11 @@ const PubMedFiltersSidebar = ({ onApplyFilters, isLoading, searchKey, filterStat
             })}
           </div>
         </div>
+        )}
       </div>
 
-      {/* CTG-Only Filters - Placeholder for future */}
-      {CTG_ONLY_OPTIONS.length > 0 && (
+      {/* CTG-Only Filters - Placeholder for future - Hide in phase1 mode */}
+      {browsingMode !== 'phase1' && CTG_ONLY_OPTIONS.length > 0 && (
         <div className="bg-custom-bg-soft rounded-lg p-3 border border-custom-border">
           <div className="flex items-center justify-between mb-2">
             <h4 className="font-semibold text-custom-text text-sm flex items-center gap-2">
@@ -714,7 +727,8 @@ PubMedFiltersSidebar.propTypes = {
   searchKey: PropTypes.string,
   filterStats: PropTypes.object,
   filters: PropTypes.object,
-  setFilters: PropTypes.func
+  setFilters: PropTypes.func,
+  browsingMode: PropTypes.string
 };
 
 export default PubMedFiltersSidebar;

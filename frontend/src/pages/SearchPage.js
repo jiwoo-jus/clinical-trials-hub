@@ -92,6 +92,7 @@ const SearchPage = () => {
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(false);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
   const [patientMode, setPatientMode] = useState(false)
+  const [browsingMode, setBrowsingMode] = useState('expert') // expert, phase1, phase2, phase3, phase4, patient
   
   // PubMed filters state
   const [pubmedFilters, setPubmedFilters] = useState({
@@ -236,6 +237,13 @@ const SearchPage = () => {
       setLastSearchedQuery(state.lastSearchedQuery || '');
       setAppliedQueries(state.appliedQueries || null);
       setQuery(state.query || '');
+      // Restore browsingMode from location.state
+      if (state.browsingMode) {
+        searchLogger.debug('[Initial] Restoring browsingMode from location.state:', state.browsingMode);
+        setBrowsingMode(state.browsingMode);
+        // Sync patientMode with browsingMode
+        setPatientMode(state.browsingMode === 'patient');
+      }
       // Restore searchKey from location.state
       if (state.searchKey) {
         searchLogger.debug('[Initial] Restoring searchKey from location.state:', state.searchKey);
@@ -272,7 +280,8 @@ const SearchPage = () => {
         patientMode: state.patientMode,
         patientResults: state.patientResults,
         dynamicQueries: state.dynamicQueries,
-        selectedQuery: state.selectedQuery
+        selectedQuery: state.selectedQuery,
+        browsingMode: state.browsingMode || 'expert'
       });
 
       const newParams = buildUrlParams({
@@ -306,6 +315,11 @@ const SearchPage = () => {
       setQuery(cachedState.query || '');
       setPatientMode(cachedState.patientMode);
       setPatientResults(cachedState.patientResults);
+      // Restore browsingMode from cache
+      if (cachedState.browsingMode) {
+        searchLogger.debug('[Initial] Restoring browsingMode from cache:', cachedState.browsingMode);
+        setBrowsingMode(cachedState.browsingMode);
+      }
       // Only restore dynamicQueries from the session cache if we did not already restore from shared localStorage
       if (!restoredFromShared && cachedState.dynamicQueries) {
         setDynamicQueries(cachedState.dynamicQueries);
@@ -469,7 +483,8 @@ const SearchPage = () => {
       query,
       searchKey,
       activeFilters,
-      hasAppliedFilters
+      hasAppliedFilters,
+      browsingMode
     };
 
     // Handle different item types for metadata
@@ -536,6 +551,7 @@ const SearchPage = () => {
     cached.searchKey = searchKey;
     cached.activeFilters = activeFilters;
     cached.hasAppliedFilters = hasAppliedFilters;
+    cached.browsingMode = browsingMode;
     cached.pageCache[page] = { results, refinedQuery, ctgTokenHistory };
     cached.patientMode = patientMode;
     cached.patientResults = patientResults;
@@ -721,6 +737,7 @@ const SearchPage = () => {
     cached.patientResults = patientResults;
     cached.dynamicQueries = dynamicQueries;
     cached.selectedQuery = selectedQuery;
+    cached.browsingMode = browsingMode;
     // Persist baseResults for QueryList restore
     cached.baseResults = baseResults;
     saveCache(cached);
@@ -798,6 +815,7 @@ const SearchPage = () => {
     cached.patientResults = patientResults;
     cached.dynamicQueries = dynamicQueries;
     cached.selectedQuery = selectedQuery;
+    cached.browsingMode = browsingMode;
     // Persist baseResults for QueryList restore
     cached.baseResults = baseResults;
     saveCache(cached);
@@ -965,12 +983,13 @@ const SearchPage = () => {
         user_query: query, 
         page: 1,  // Always reset to page 1 for new search
         pageSize, 
-        ctgPageToken: null 
+        ctgPageToken: null,
+        browsingMode: browsingMode  // Add browsing mode
       };
       searchLogger.debug('[Search] Current pubmedFilters state:', pubmedFilters);
       searchLogger.debug('[Search] Using current filters with query (including PubMed filters):', rawFilters);
     } else {
-      rawFilters = customParams;
+      rawFilters = { ...customParams, browsingMode: browsingMode };  // Add browsing mode to custom params
       searchLogger.debug('[Search] Using custom params:', rawFilters);
     }
     
@@ -1101,6 +1120,7 @@ const SearchPage = () => {
       cached.patientResults = patientResults;
       cached.dynamicQueries = dynamicQueries;
       cached.selectedQuery = selectedQuery;
+      cached.browsingMode = browsingMode;
       // Persist baseResults for QueryList restore
       cached.baseResults = baseResults;
       saveCache(cached);
@@ -1212,6 +1232,7 @@ const SearchPage = () => {
         patientResults,
         dynamicQueries,
         selectedQuery,
+        browsingMode
       };
       // Ensure baseResults persisted so QueryList can restore original results
       cacheToSave.baseResults = baseResults || (results || null);
@@ -1540,6 +1561,7 @@ const SearchPage = () => {
           collapsedWidth="2rem"
           onToggle={setLeftSidebarOpen}
           otherSidebarOpen={rightSidebarOpen}
+          browsingMode={browsingMode}
         />
         
         {/* Main content area */}
@@ -1549,6 +1571,102 @@ const SearchPage = () => {
             <h1 className="text-3xl font-bold text-center text-black tracking-tight mb-6 hover:opacity-80 transition">
               Clinical Trials Hub
             </h1>
+          </div>
+
+          {/* Browsing Mode Selector - Minimal Tab Style */}
+          <div className="w-full max-w-7xl mx-auto px-4 mb-8">
+            <div className="flex flex-col items-center gap-4">
+              {/* <span className="text-xs uppercase tracking-wider text-gray-500 font-medium">Browsing Mode</span> */}
+              <div className="flex items-center gap-1 bg-gray-50 rounded-lg p-1">
+                {/* Expert Mode */}
+                <button
+                  onClick={() => {
+                    setBrowsingMode('expert')
+                    setPatientMode(false)
+                    setFilters(createFilters())
+                    setResults(null)
+                    setPatientResults(null)
+                  }}
+                  className={`px-5 py-2 text-sm font-medium transition-all duration-200 rounded-md ${
+                    browsingMode === 'expert'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Expert
+                </button>
+
+                <div className="w-px h-6 bg-gray-300"></div>
+
+                {/* Phase I Mode */}
+                <button
+                  onClick={() => {
+                    setBrowsingMode('phase1')
+                    setPatientMode(false)
+                    setFilters(createFilters())
+                    setResults(null)
+                    setPatientResults(null)
+                  }}
+                  className={`px-5 py-2 text-sm font-medium transition-all duration-200 rounded-md ${
+                    browsingMode === 'phase1'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Phase I
+                </button>
+
+                <div className="w-px h-6 bg-gray-300"></div>
+
+                {/* Phase II Mode - Coming Soon */}
+                <span
+                  className="px-5 py-2 text-sm font-medium text-gray-400 opacity-50 cursor-default"
+                  title="Coming Soon"
+                >
+                  Phase II
+                </span>
+
+                <div className="w-px h-6 bg-gray-300"></div>
+
+                {/* Phase III Mode - Coming Soon */}
+                <span
+                  className="px-5 py-2 text-sm font-medium text-gray-400 opacity-50 cursor-default"
+                  title="Coming Soon"
+                >
+                  Phase III
+                </span>
+
+                <div className="w-px h-6 bg-gray-300"></div>
+
+                {/* Phase IV Mode - Coming Soon */}
+                <span
+                  className="px-5 py-2 text-sm font-medium text-gray-400 opacity-50 cursor-default"
+                  title="Coming Soon"
+                >
+                  Phase IV
+                </span>
+
+                <div className="w-px h-6 bg-gray-300"></div>
+
+                {/* Patient Mode */}
+                <button
+                  onClick={() => {
+                    setBrowsingMode('patient')
+                    setPatientMode(true)
+                    setFilters(createFilters())
+                    setResults(null)
+                    setPatientResults(null)
+                  }}
+                  className={`px-5 py-2 text-sm font-medium transition-all duration-200 rounded-md ${
+                    browsingMode === 'patient'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Patient
+                </button>
+              </div>
+            </div>
           </div>
 
           <SearchBar 
@@ -1580,7 +1698,7 @@ const SearchPage = () => {
           </div>
 
           <div className="w-full max-w-7xl mx-auto px-4">
-            <div className="flex text-sm items-center ml-1 gap-2">
+            <div className="flex text-sm items-center ml-1 gap-2" style={{display: 'none'}}>
               <span className="text-custom-text font-semibold mr-2">Select Browsing Mode:</span>
               <button
                 onClick={function handleClick() {

@@ -14,7 +14,8 @@ const FilterSidebar = ({
   expandedWidth = "25%",
   collapsedWidth = "2rem",
   onToggle,
-  otherSidebarOpen = false
+  otherSidebarOpen = false,
+  browsingMode = 'expert'
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
@@ -99,6 +100,7 @@ const FilterSidebar = ({
             filterStats={filterStats}
             filters={filters}
             setFilters={setFilters}
+            browsingMode={browsingMode}
           />
         </div>
       )}
@@ -117,7 +119,8 @@ FilterSidebar.propTypes = {
   expandedWidth: PropTypes.string,
   collapsedWidth: PropTypes.string,
   onToggle: PropTypes.func,
-  otherSidebarOpen: PropTypes.bool
+  otherSidebarOpen: PropTypes.bool,
+  browsingMode: PropTypes.string
 };
 
 export default FilterSidebar;

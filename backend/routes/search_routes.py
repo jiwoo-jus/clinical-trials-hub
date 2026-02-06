@@ -60,6 +60,8 @@ class SearchRequest(BaseModel):
     # CTG-only filters
     ctg_has_results: Optional[bool] = False
     ctg_status: Optional[List[str]] = []
+    # Browsing mode
+    browsingMode: Optional[str] = 'expert'
 
 class PageRequest(BaseModel):
     search_key: str
@@ -205,8 +207,9 @@ async def search(request: Request, body: SearchRequest):
             logger.info("Searching PubMed...")
             # Always apply filters to PubMed query (includes fixed PMC Open Access filter)
             base_query = search_params.get("pubmed_query") or search_params.get("query")
-            filtered_query = PubMedFilterBuilder.append_filters_to_query(base_query, filter_criteria)
-            logger.info(f"🔍 PubMed query with filters: {filtered_query}")
+            browsing_mode = data.get("browsingMode", "expert")
+            filtered_query = PubMedFilterBuilder.append_filters_to_query(base_query, filter_criteria, browsing_mode)
+            logger.info(f"🔍 PubMed query with filters (mode: {browsing_mode}): {filtered_query}")
             
             # Create modified search params with filtered query
             filtered_params = search_params.copy()
@@ -222,8 +225,9 @@ async def search(request: Request, body: SearchRequest):
             filter_criteria_ctg = _build_ctg_filter_criteria(data)
             logger.info(f"🎯 CTG filter criteria (before building): {filter_criteria_ctg}")
             
-            area_filter = CTGFilterBuilder.build_combined_filter(filter_criteria_ctg)
-            logger.info(f"🔍 CTG AREA filter string: '{area_filter}'")
+            browsing_mode = data.get("browsingMode", "expert")
+            area_filter = CTGFilterBuilder.build_combined_filter(filter_criteria_ctg, browsing_mode)
+            logger.info(f"🔍 CTG AREA filter string (mode: {browsing_mode}): '{area_filter}'")
             
             # Build status parameter for API
             status_param = CTGFilterBuilder.build_status_param(filter_criteria_ctg)
@@ -672,9 +676,10 @@ async def filter_results(request: Request):
             # Search PubMed if requested
             if 'PM' in source_types and pubmed_base_query:
                 logger.info(f"🔍 Searching PubMed with filters")
-                filtered_pm_query = PubMedFilterBuilder.append_filters_to_query(pubmed_base_query, filter_criteria)
+                browsing_mode = cached_data.get('original_request', {}).get('browsingMode', 'expert')
+                filtered_pm_query = PubMedFilterBuilder.append_filters_to_query(pubmed_base_query, filter_criteria, browsing_mode)
                 logger.info(f"  Base query (no filters): {pubmed_base_query}")
-                logger.info(f"  Filtered query: {filtered_pm_query}")
+                logger.info(f"  Filtered query (mode: {browsing_mode}): {filtered_pm_query}")
                 
                 pm_results = await pm_service.search_pm(
                     combined_query=filtered_pm_query,
@@ -728,11 +733,12 @@ async def filter_results(request: Request):
                 
                 # Build CTG-applicable filters (exclude PubMed-only)
                 filter_criteria_ctg = _build_ctg_filter_criteria_from_full(filter_criteria)
-                area_filter = CTGFilterBuilder.build_combined_filter(filter_criteria_ctg)
+                browsing_mode = cached_data.get('original_request', {}).get('browsingMode', 'expert')
+                area_filter = CTGFilterBuilder.build_combined_filter(filter_criteria_ctg, browsing_mode)
                 status_param = CTGFilterBuilder.build_status_param(filter_criteria_ctg)
                 
                 logger.info(f"🎯 CTG-applicable filters: {filter_criteria_ctg}")
-                logger.info(f"📐 CTG AREA filter: {area_filter}")
+                logger.info(f"📐 CTG AREA filter (mode: {browsing_mode}): {area_filter}")
                 logger.info(f"📊 CTG Status filter: {status_param}")
                 
                 # Call CTG API
@@ -907,10 +913,13 @@ def _build_filtered_queries_display(
     """Build filtered queries for display in response"""
     filtered_queries = {}
     
+    # Get browsing mode from cached data
+    browsing_mode = cached_data.get('original_request', {}).get('browsingMode', 'expert')
+    
     # PubMed query
     if 'PM' in source_types:
         if pubmed_query:
-            filtered_queries['pubmed'] = PubMedFilterBuilder.append_filters_to_query(pubmed_query, filter_criteria)
+            filtered_queries['pubmed'] = PubMedFilterBuilder.append_filters_to_query(pubmed_query, filter_criteria, browsing_mode)
         else:
             filtered_queries['pubmed'] = "No PubMed query available"
     
@@ -945,7 +954,7 @@ def _build_filtered_queries_display(
         
         # Add filter information (CTG-applicable only)
         filter_criteria_ctg = _build_ctg_filter_criteria_from_full(filter_criteria)
-        area_filter = CTGFilterBuilder.build_combined_filter(filter_criteria_ctg)
+        area_filter = CTGFilterBuilder.build_combined_filter(filter_criteria_ctg, browsing_mode)
         if area_filter:
             ctg_query_parts.append(f"AREA Filters: {area_filter}")
         

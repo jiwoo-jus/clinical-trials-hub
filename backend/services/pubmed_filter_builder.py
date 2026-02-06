@@ -16,6 +16,14 @@ class PubMedFilterBuilder:
     # Fixed filter that is always applied (PMC Open Access)
     FIXED_FILTER = 'pubmed pmc open access[Filter]'
     
+    # Browsing mode to phase filter mapping
+    BROWSING_MODE_FILTERS = {
+        'phase1': 'phase_i',
+        'phase2': 'phase_ii',
+        'phase3': 'phase_iii',
+        'phase4': 'phase_iv',
+    }
+    
     # PubMed filter mappings - separated into Phase and Study Type
     PHASE_FILTERS = {
         'phase_i': 'clinicaltrialphasei[Filter]',
@@ -49,7 +57,7 @@ class PubMedFilterBuilder:
     }
     
     @staticmethod
-    def build_filter_query(filters: Dict[str, Any]) -> str:
+    def build_filter_query(filters: Dict[str, Any], browsing_mode: str = 'expert') -> str:
         """
         Build PubMed filter query from filter selections.
         Phase filters are OR'd within their category.
@@ -58,11 +66,20 @@ class PubMedFilterBuilder:
         
         Args:
             filters: Dictionary with filter selections
+            browsing_mode: Current browsing mode ('expert', 'phase1', 'phase2', etc.)
             
         Returns:
             PubMed filter query string (to be appended to base query with AND)
         """
         filter_parts = []
+        
+        # Apply browsing mode filter if not in expert mode
+        if browsing_mode != 'expert' and browsing_mode in PubMedFilterBuilder.BROWSING_MODE_FILTERS:
+            phase_key = PubMedFilterBuilder.BROWSING_MODE_FILTERS[browsing_mode]
+            if phase_key in PubMedFilterBuilder.PHASE_FILTERS:
+                browsing_mode_filter = PubMedFilterBuilder.PHASE_FILTERS[phase_key]
+                filter_parts.append(browsing_mode_filter)
+                logger.info(f"[PubMedFilter] Applied browsing mode filter '{browsing_mode}': {browsing_mode_filter}")
         
         # PMC Open Access filter (only apply if explicitly True)
         pmc_open_access = filters.get('pmc_open_access', False)
@@ -172,18 +189,19 @@ class PubMedFilterBuilder:
         return None
     
     @staticmethod
-    def append_filters_to_query(base_query: str, filters: Dict[str, Any]) -> str:
+    def append_filters_to_query(base_query: str, filters: Dict[str, Any], browsing_mode: str = 'expert') -> str:
         """
         Append filter query to base search query.
         
         Args:
             base_query: Original search query
             filters: Filter selections
+            browsing_mode: Current browsing mode ('expert', 'phase1', 'phase2', etc.)
             
         Returns:
             Combined query with filters
         """
-        filter_query = PubMedFilterBuilder.build_filter_query(filters)
+        filter_query = PubMedFilterBuilder.build_filter_query(filters, browsing_mode)
         
         if filter_query:
             # Wrap base query in parentheses if it contains operators
