@@ -47,7 +47,7 @@ class SearchRequest(BaseModel):
     isRefined: Optional[bool] = False
     page: Optional[int] = 1
     pageSize: Optional[int] = DEFAULT_PAGE_SIZE
-    sources: Optional[List[str]] = ["PM", "CTG"]
+    source_type: Optional[List[str]] = ["PM", "CTG"]
     ctgPageToken: Optional[str] = None
     refinedQuery: Optional[dict] = None
     # Post-filter parameters for initial search filtering
@@ -154,25 +154,22 @@ async def search(request: Request, body: SearchRequest):
             data.get("other_term")
         ])
         
-        # Determine sources to search
-        sources_to_search = []
-        if pubmed_query or has_general_query:
-            sources_to_search.append("PM")
-        if ctg_query or has_general_query:
-            sources_to_search.append("CTG")
-            
-        # Override with user-specified sources if provided and queries support it
-        if data.get("sources"):
-            user_sources = data.get("sources", [])
-            final_sources = []
-            for source in user_sources:
-                if source == "PM" and (pubmed_query or has_general_query):
-                    final_sources.append("PM")
-                elif source == "CTG" and (ctg_query or has_general_query):
-                    final_sources.append("CTG")
-            sources_to_search = final_sources if final_sources else sources_to_search
+        # Get user-specified sources (default to both if not provided)
+        user_sources = data.get("source_type", ["PM", "CTG"])
+        logger.info(f"User requested sources: {user_sources}")
         
-        logger.info(f"Determined sources to search: {sources_to_search} (pubmed_query: {bool(pubmed_query)}, ctg_query: {bool(ctg_query)}, has_general_query: {has_general_query})")
+        # Determine primary sources to search based on user selection
+        # If user selects only one source, we'll do a full search on that source
+        # and fetch referenced items from the other source by ID only
+        primary_sources = []
+        
+        # Only search sources that the user has selected
+        if "PM" in user_sources and (pubmed_query or has_general_query):
+            primary_sources.append("PM")
+        if "CTG" in user_sources and (ctg_query or has_general_query):
+            primary_sources.append("CTG")
+        
+        logger.info(f"Primary sources to search: {primary_sources} (user_sources: {user_sources})")
         
         # Always build filter criteria (even if empty)
         publication_date = data.get("publication_date")
@@ -203,7 +200,8 @@ async def search(request: Request, body: SearchRequest):
             logger.info(f"dynamic query result: {dynamic_queries}")
         
         # Execute searches with filtering always applied
-        if "PM" in sources_to_search:
+        # Step 1: Search primary sources (user-selected sources)
+        if "PM" in primary_sources:
             logger.info("Searching PubMed...")
             # Always apply filters to PubMed query (includes fixed PMC Open Access filter)
             base_query = search_params.get("pubmed_query") or search_params.get("query")
@@ -219,7 +217,7 @@ async def search(request: Request, body: SearchRequest):
             is_initial_search = True
             logger.info(f"PubMed search completed. Results: {len(results['pm'].get('results', []))} items")
         
-        if "CTG" in sources_to_search:
+        if "CTG" in primary_sources:
             logger.info("Searching ClinicalTrials.gov...")
             # Always build and apply CTG filters (exclude PubMed-only filters)
             filter_criteria_ctg = _build_ctg_filter_criteria(data)
@@ -246,6 +244,29 @@ async def search(request: Request, body: SearchRequest):
             results["ctg"] = await _search_clinicaltrials(filtered_ctg_params)
             is_initial_search = True
             logger.info(f"CTG search completed. Results: {len(results['ctg'].get('results', []))} items")
+        
+        # Step 2: Fetch referenced items from non-primary sources
+        # If only PM was searched, fetch CTG items that are referenced by PM results
+        if len(primary_sources) == 1 and "PM" in primary_sources:
+            logger.info("Fetching referenced CTG items from PM results...")
+            pm_results = results.get("pm", {}).get("results", [])
+            ctg_ids = [item.get("linked_ctg_id") for item in pm_results if item.get("linked_ctg_id")]
+            if ctg_ids:
+                logger.info(f"Found {len(ctg_ids)} CTG references in PM results: {ctg_ids}")
+                ctg_details = await _fetch_ctg_by_ids(ctg_ids)
+                results["ctg"] = {"results": ctg_details, "total": len(ctg_details)}
+                logger.info(f"Fetched {len(ctg_details)} CTG items by reference")
+        
+        # If only CTG was searched, fetch PM items that are referenced by CTG results  
+        elif len(primary_sources) == 1 and "CTG" in primary_sources:
+            logger.info("Fetching referenced PM items from CTG results...")
+            ctg_results = results.get("ctg", {}).get("results", [])
+            pm_ids = [item.get("linked_pubmed_id") for item in ctg_results if item.get("linked_pubmed_id")]
+            if pm_ids:
+                logger.info(f"Found {len(pm_ids)} PM references in CTG results: {pm_ids}")
+                pm_details = await _fetch_pm_by_ids(pm_ids)
+                results["pm"] = {"results": pm_details, "total": len(pm_details)}
+                logger.info(f"Fetched {len(pm_details)} PM items by reference")
         
         # Merge and paginate results
         logger.info("Starting merge and pagination...")
@@ -973,6 +994,37 @@ def _build_filtered_queries_display(
     return filtered_queries
 
 
+async def _fetch_pm_by_ids(pmids: List[str]) -> List[Dict]:
+    """Fetch PubMed articles by PMIDs (for reference linking only)"""
+    if not pmids:
+        return []
+    
+    logger.info(f"Fetching {len(pmids)} PM items by ID")
+    try:
+        pm_data = await pm_service.fetch_pubmed_data(pmids)
+        logger.info(f"Successfully fetched {len(pm_data)} PM items")
+        return pm_data
+    except Exception as e:
+        logger.error(f"Error fetching PM by IDs: {e}")
+        return []
+
+
+async def _fetch_ctg_by_ids(nct_ids: List[str]) -> List[Dict]:
+    """Fetch CTG studies by NCT IDs (for reference linking only)"""
+    if not nct_ids:
+        return []
+    
+    logger.info(f"Fetching {len(nct_ids)} CTG items by ID")
+    try:
+        from services.ctg_service import _fetch_ctg_details
+        ctg_data = _fetch_ctg_details(nct_ids)
+        logger.info(f"Successfully fetched {len(ctg_data)} CTG items")
+        return ctg_data
+    except Exception as e:
+        logger.error(f"Error fetching CTG by IDs: {e}")
+        return []
+
+
 async def _create_dynamic_queries(data: dict) -> dict:
     query_service = get_query_service()
     query_terms = query_service.generate_query_terms(data)
@@ -1298,7 +1350,18 @@ async def _search_clinicaltrials(params: dict) -> dict:
 
 def _merge_and_paginate_results(results: dict, query: str,
                                 page: int, page_size: int) -> dict:
-    """Merge PM and CTG results, sort by BM25, and paginate"""
+    """Merge PM and CTG results, sort by BM25, and paginate
+    
+    Note: Source filtering is now done at the search level, not here.
+    If user selects only one source, only that source is fully searched,
+    and the other source only fetches referenced items by ID.
+    
+    Args:
+        results: Dict with 'pm' and 'ctg' keys containing search results
+        query: Search query string for BM25 scoring
+        page: Page number (1-based)
+        page_size: Number of results per page
+    """
     logger.info("=== MERGE AND PAGINATE START ===")
     try:
         pm_results  = results.get("pm",  {}).get("results", [])
@@ -1431,10 +1494,10 @@ def _merge_and_paginate_results(results: dict, query: str,
             reverse=True
         )
 
-        # Counts
-        merged_count   = len(merged_items)
-        pm_only_count  = len(pm_only_items)
-        ctg_only_count = len(ctg_only_items)
+        # Counts (no need for source filtering - already done at search level)
+        merged_count   = len([x for x in final_results if x.get("type") == "MERGED"])
+        pm_only_count  = len([x for x in final_results if x.get("type") == "PM"])
+        ctg_only_count = len([x for x in final_results if x.get("type") == "CTG"])
         total_count    = len(final_results)
 
         # Page slice

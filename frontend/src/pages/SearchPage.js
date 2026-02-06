@@ -57,8 +57,7 @@ const defaultFilters = () => ({
   location: null,
   status: null,
   pubmed_query: null,
-  ctg_query: null,
-  sources: ["PM", "CTG"]
+  ctg_query: null
 });
 
 const createFilters = (params = {}) => ({
@@ -68,8 +67,7 @@ const createFilters = (params = {}) => ({
   location: null,
   status: null,
   pubmed_query: null,
-  ctg_query: null,
-  sources: params.sources ? params.sources.split(',') : ["PM", "CTG"]
+  ctg_query: null
 });
 
 // Helper function to check if any search criteria are provided
@@ -856,7 +854,7 @@ const SearchPage = () => {
       // Prepare payload for new search (user_query only with default filters)
       const searchPayload = {
         user_query: currentUserQuery,
-        sources: resetFilters.sources,
+        source_type: pubmedFilters.source_type || ['PM', 'CTG'],
         article_type: filters.article_type || [],
         species: filters.species || [],
         age: filters.age || [],
