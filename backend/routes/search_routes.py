@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from config import DEFAULT_PAGE_SIZE, MAX_FETCH_SIZE
 from services import ctg_service, pm_service
@@ -55,6 +55,14 @@ class SearchRequest(BaseModel):
     species: Optional[List[str]] = []
     age: Optional[List[str]] = []
     publication_date: Optional[dict] = None
+
+    @field_validator('age', mode='before')
+    @classmethod
+    def coerce_age_to_list(cls, v):
+        """Accept age as either a string (patient mode) or list (filter mode)."""
+        if isinstance(v, str):
+            return [v] if v else []
+        return v or []
     # PubMed-only filters
     pmc_open_access: Optional[bool] = False
     # CTG-only filters
@@ -1167,6 +1175,11 @@ async def _get_query_results(data: dict) -> dict:
     return response
 
 async def _create_patient_queries(data: dict) -> dict:
+    # Normalize age: coerce list back to space-separated string for LLM prompts
+    raw_age = data.get("age")
+    if isinstance(raw_age, list):
+        data["age"] = " ".join(raw_age) if raw_age else None
+
     refine_params = {
         "cond": data.get("cond"),
         "intr": data.get("intr"),

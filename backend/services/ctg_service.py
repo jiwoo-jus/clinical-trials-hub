@@ -23,11 +23,10 @@ def _fetch_ctg_details(ids: List[str]) -> List[Dict[str, Any]]:
     if not ids:
         return []
 
-    # params는 그대로 유지
+    # params remain as-is
     params = [ids]
 
-    # 🚀 최적화된 SQL: JOIN 폭발을 막기 위해 1:N 관계는 스칼라 서브쿼리(ARRAY)로 변경
-    # GROUP BY와 DISTINCT를 제거하여 Sort 부하를 99% 감소시킴
+    # 1:N relationships replaced with scalar subqueries (ARRAY) to prevent JOIN explosion
     sql = """
         SELECT
             s.nct_id,
@@ -45,7 +44,7 @@ def _fetch_ctg_details(ids: List[str]) -> List[Dict[str, Any]]:
             s.enrollment_type,
             COALESCE(bs.description, '') as brief_summary,
             
-            -- Design information (1:1 관계는 JOIN 유지)
+            -- Design information (1:1 relationship, keeping JOIN)
             d.allocation as design_allocation,
             d.observational_model,
             d.intervention_model,
@@ -133,12 +132,11 @@ def _fetch_ctg_details(ids: List[str]) -> List[Dict[str, Any]]:
             ) as collaborators
             
         FROM ctgov.studies s
-        -- 1:1 관계인 테이블만 JOIN (데이터 뻥튀기 없음)
+        -- JOIN only 1:1 relationship tables (no data duplication)
         LEFT JOIN ctgov.designs d ON d.nct_id = s.nct_id
         LEFT JOIN ctgov.brief_summaries bs ON bs.nct_id = s.nct_id
         
         WHERE s.nct_id = ANY(%s)
-        -- 🚫 GROUP BY 제거: 서브쿼리를 썼기 때문에 이제 GROUP BY가 필요 없습니다!
     """
     
     log.debug(f"[_fetch_ctg_details] Optimized CTG DB query executed.")

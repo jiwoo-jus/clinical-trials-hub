@@ -13,7 +13,7 @@ import FilterSidebar from '../components/FilterSidebar';
 import Header from '../components/Header';
 import { SearchBar } from '../components/SearchBar';
 import EligibilityCriteria from '../components/EligibilityCriteria';
-//import SearchInsights from '../components/SearchInsights';
+import SearchInsights from '../components/SearchInsights';
 import SearchResults from '../components/SearchResults';
 import { auth, db } from "../firebase";
 import { searchLogger, cacheLogger, filterLogger, detailLogger } from '../utils/logger';
@@ -455,14 +455,6 @@ const SearchPage = () => {
     setCtgTokenHistory({});
   }, [filters, sourcesString]);
 
-  const isPhase1ClinicalTrial = (publicationTypes = []) => {
-    if (!Array.isArray(publicationTypes)) return false;
-    const normalized = publicationTypes.map((type) => String(type).toLowerCase());
-    const hasClinicalTrial = normalized.some((type) => type.includes('clinical trial'));
-    const hasPhase1 = normalized.some((type) => type.includes('phase i'));
-    return hasClinicalTrial && hasPhase1;
-  };
-
   const handleViewDetails = (item) => {
     detailLogger.debug('[Detail] View details for item:', item);
 
@@ -510,10 +502,7 @@ const SearchPage = () => {
     } else {
       // Handle regular PM/CTG items
       const publicationTypes = item.publication_types || [];
-      const extractionProfile =
-        item.type === 'PM' && isPhase1ClinicalTrial(publicationTypes)
-          ? 'phase1'
-          : null;
+      const extractionProfile = null; // Expert mode always uses full extraction
 
       metadata = {
         type: item.type,
@@ -1780,8 +1769,8 @@ const SearchPage = () => {
                 {patientResults.map((item, index) => (
                   <div
                     key={index} className={` panel min-w-[300px] flex-shrink-0  p-4 rounded shadow flex flex-col  bg-white light:border-primary-12 light:bg-secondary-100 rounded-2xl light:shadow-splash-chatpgpt-input hover:ring-2 hover:ring-neutral-200 p-4 border ${
-                     selectedQuery === index ? 'ring-2 ring-neutral-300' : '' }`}
-                 
+                    selectedQuery === index ? 'ring-2 ring-neutral-300' : '' }`}
+                
                     style={{
                       flex: 1 / 4,
                     }}
@@ -1840,15 +1829,15 @@ const SearchPage = () => {
             
             
               
-              {/* AI Insights Section   
-            {!patientMode && results && results.results && results.results.length > 0 && (
+              {/* AI Insights Section */}
+              {!patientMode && results && results.results && results.results.length > 0 && (
                 <SearchInsights
                   searchKey={searchKey}
                   page={page}
                   appliedFilters={activeFilters}
                   results={results}
                 />
-              )} */}
+              )}
             </>
           )}
 

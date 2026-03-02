@@ -67,45 +67,85 @@ def get_abstract_by_pmcid(pmcid: str) -> str:
         raise
 
 
+def _extract_ctg_eligibility_text(study: dict) -> str:
+    """
+    Return the raw eligibilityModule JSON from a CTG v2 study dict as a formatted string.
+    Returns an empty string if not available.
+    """
+    try:
+        protocol = study.get('protocolSection', study)
+        eligibility_module = protocol.get('eligibilityModule', {})
+        if not eligibility_module:
+            return ''
+        return "## Eligibility Module (from ClinicalTrials.gov):\n" + json.dumps(eligibility_module, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not extract eligibility module: {e}")
+        return ''
+
+
 def get_description_by_nctid(nctid: str) -> str:
     """
-    Fetch and extract brief summary/description from ClinicalTrials.gov by NCT ID.
+    Fetch full study description + eligibility criteria from ClinicalTrials.gov by NCT ID.
     Raises ValueError if description cannot be retrieved.
     """
     try:
         ctg_detail = get_ctg_detail(nctid)
         if not ctg_detail:
             raise ValueError(f"Failed to fetch CTG detail for {nctid}")
-        
-        # Extract brief summary from the structured info
-        description = ""
-        
-        # Try to get brief summary
-        if isinstance(ctg_detail, dict) and 'brief_summary' in ctg_detail:
-            description = ctg_detail.get('brief_summary', '')
-        
-        # If no brief summary, try to construct from other fields
-        if not description:
-            parts = []
-            if isinstance(ctg_detail, dict):
-                if 'brief_title' in ctg_detail:
-                    parts.append(f"Title: {ctg_detail['brief_title']}")
-                if 'official_title' in ctg_detail:
-                    parts.append(f"Official Title: {ctg_detail['official_title']}")
-                if 'conditions' in ctg_detail and ctg_detail['conditions']:
-                    parts.append(f"Conditions: {', '.join(ctg_detail['conditions'])}")
-                if 'intervention_names' in ctg_detail and ctg_detail['intervention_names']:
-                    parts.append(f"Interventions: {', '.join(ctg_detail['intervention_names'])}")
-                if 'primary_outcomes' in ctg_detail and ctg_detail['primary_outcomes']:
-                    parts.append(f"Primary Outcomes: {', '.join(ctg_detail['primary_outcomes'][:3])}")  # Limit to first 3
-            
-            description = '\n\n'.join(parts)
-        
+
+        protocol = ctg_detail.get('protocolSection', ctg_detail)
+        parts = []
+
+        # Identification
+        id_module = protocol.get('identificationModule', {})
+        brief_title = id_module.get('briefTitle', '')
+        official_title = id_module.get('officialTitle', '')
+        if brief_title:
+            parts.append(f"Title: {brief_title}")
+        if official_title and official_title != brief_title:
+            parts.append(f"Official Title: {official_title}")
+
+        # Description module (brief summary + detailed description)
+        desc_module = protocol.get('descriptionModule', {})
+        brief_summary = desc_module.get('briefSummary', '')
+        detailed_desc = desc_module.get('detailedDescription', '')
+        if brief_summary:
+            parts.append(f"Brief Summary:\n{brief_summary}")
+        if detailed_desc:
+            parts.append(f"Detailed Description:\n{detailed_desc}")
+
+        # Design module
+        design_module = protocol.get('designModule', {})
+        study_type = design_module.get('studyType', '')
+        phases = design_module.get('phases', [])
+        if study_type:
+            parts.append(f"Study Type: {study_type}")
+        if phases:
+            parts.append(f"Phase: {', '.join(phases)}")
+
+        # Conditions & interventions
+        conditions_module = protocol.get('conditionsModule', {})
+        conditions = conditions_module.get('conditions', [])
+        if conditions:
+            parts.append(f"Conditions: {', '.join(conditions)}")
+
+        arms_module = protocol.get('armsInterventionsModule', {})
+        interventions = arms_module.get('interventions', [])
+        if interventions:
+            intr_names = [f"{i.get('type', '')} {i.get('name', '')}".strip() for i in interventions]
+            parts.append(f"Interventions: {', '.join(intr_names)}")
+
+        # Eligibility criteria (most important for this use case)
+        eligibility_text = _extract_ctg_eligibility_text(ctg_detail)
+        if eligibility_text:
+            parts.append(eligibility_text)
+
+        description = '\n\n'.join(parts)
         if not description:
             raise ValueError(f"No description found for {nctid}")
-        
+
         return description
-        
+
     except Exception as e:
         logger.error(f"Error getting description for {nctid}: {e}")
         raise
@@ -324,6 +364,18 @@ class SystematicReviewService:
             else:  # Default to PMC
                 text_content = get_abstract_by_pmcid(study_id)
                 content_label = "abstract"
+
+            # For CTG studies: always append raw eligibilityModule JSON from API
+            # (text_content from the frontend only contains the brief summary)
+            if study_type.upper() == "CTG":
+                try:
+                    ctg_study = get_ctg_detail(study_id)
+                    eligibility_text = _extract_ctg_eligibility_text(ctg_study)
+                    if eligibility_text:
+                        text_content = text_content + "\n\n" + eligibility_text
+                        logger.info(f"Appended eligibilityModule JSON for {study_id}")
+                except Exception as e:
+                    logger.warning(f"Could not fetch CTG eligibility module for {study_id}: {e}")
             
             # Build criteria list
             all_criteria = self._build_criteria_list(inclusion_criteria, exclusion_criteria)
@@ -336,12 +388,15 @@ class SystematicReviewService:
             )
             
             # Call LLM
+            # max_tokens: each criterion result ~500 tokens; safety margin for N criteria
+            n_criteria = len(all_criteria)
+            dynamic_max_tokens = max(10000, n_criteria * 600 + 1000)
             logger.info(f"Checking eligibility criteria for {study_id} ({study_type})")
             response = self.openai_service.generate_completion(
                 prompt=user_prompt,
                 system_message=self.system_prompt,
-                max_tokens=2000,
-                temperature=0.1,
+                max_tokens=dynamic_max_tokens,
+                # temperature=0.1,
                 response_format="json"
             )
             

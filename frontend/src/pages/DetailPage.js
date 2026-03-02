@@ -8,7 +8,7 @@ import ReferenceList from '../components/ReferenceList';
 import StructuredInfoTabs from '../components/StructuredInfoTabs';
 import MeSHGlossary from '../components/MeSHGlossary';
 import Header from '../components/Header';
-import { ChevronsDownUp, ChevronsUpDown, ArrowUp } from 'lucide-react';
+import { ChevronsDownUp, ChevronsUpDown, ArrowUp, Download } from 'lucide-react';
 
 // const BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5050';
 
@@ -20,21 +20,11 @@ const DetailPage = () => {
 
   const currentPmcid = pmcid || metadata.pmcid || '';
 
-  const isPhase1ClinicalTrial = useCallback((publicationTypes = []) => {
-    if (!Array.isArray(publicationTypes)) return false;
-    const normalized = publicationTypes.map((type) => String(type).toLowerCase());
-    const hasClinicalTrial = normalized.some((type) => type.includes('clinical trial'));
-    const hasPhase1 = normalized.some((type) => type.includes('phase i'));
-    return hasClinicalTrial && hasPhase1;
-  }, []);
-
   const promptProfile = useMemo(() => {
+    // Only use explicitly passed extraction_profile; do not auto-detect phase1 in Expert mode
     if (metadata.extraction_profile) return metadata.extraction_profile;
-    if ((source === 'PM' || source === 'PMC') && metadata.type === 'PM') {
-      return isPhase1ClinicalTrial(metadata.publication_types) ? 'phase1' : null;
-    }
     return null;
-  }, [metadata, source, isPhase1ClinicalTrial]);
+  }, [metadata]);
 
   const [structuredInfo, setStructuredInfo] = useState(
     metadata.structured_info || null
@@ -317,6 +307,26 @@ const DetailPage = () => {
     }
   }, [structuredInfo, fullText]);
 
+  const handleDownloadStructuredInfo = useCallback(() => {
+    if (!structuredInfo) return;
+
+    const baseId = source === 'CTG'
+      ? nctId
+      : (currentPmcid || metadata.pmid || paperId);
+    const safeBase = baseId ? String(baseId).replace(/\s+/g, '_') : 'structured_info';
+    const fileName = `${safeBase}_structured_info.json`;
+    const jsonContent = JSON.stringify(structuredInfo, null, 2);
+    const blob = new Blob([jsonContent], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, [structuredInfo, source, nctId, currentPmcid, metadata.pmid, paperId]);
+
   return (
     <><Header /> 
     <div className="px-6 py-8 max-w-screen-2xl mx-auto">
@@ -578,9 +588,20 @@ const DetailPage = () => {
               </div>
             )}
             <div className="flex-1 border border-custom-border rounded-2xl shadow-lg p-5 bg-white overflow-x-auto overflow-y-hidden">
-              <h2 className="text-xl font-semibold text-custom-blue-deep border-b border-custom-border pb-2 mb-2">
-                Structured Information
-              </h2>
+              <div className="flex items-center justify-between border-b border-custom-border pb-2 mb-2">
+                <h2 className="text-xl font-semibold text-custom-blue-deep">
+                  Structured Information
+                </h2>
+                <button
+                  type="button"
+                  onClick={handleDownloadStructuredInfo}
+                  disabled={!structuredInfo}
+                  className="p-1.5 text-custom-blue-deep rounded-full hover:bg-custom-blue-lightest transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Download Structured Info"
+                >
+                  <Download size={22} strokeWidth={2} />
+                </button>
+              </div>
               {structuredInfo ? (
                 <StructuredInfoTabs structuredInfo={structuredInfo} />
               ) : (

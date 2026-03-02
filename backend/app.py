@@ -26,6 +26,30 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# ── AI Insights dedicated logger setup ──────────────────────────────────────────────
+# insights_conversations.log : cumulative log (append mode)
+insights_log_file = os.path.join(log_dir, "insights_conversations.log")
+insights_logger = logging.getLogger("insights_conversations")
+insights_logger.setLevel(logging.DEBUG)
+insights_logger.propagate = False  # Prevent duplicate output to main logger
+
+_insights_fmt = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+_insights_fh = logging.FileHandler(insights_log_file, mode="a", encoding="utf-8")
+_insights_fh.setFormatter(_insights_fmt)
+insights_logger.addHandler(_insights_fh)
+
+# Also output to console (separate format from main handler)
+_insights_sh = logging.StreamHandler()
+_insights_sh.setFormatter(_insights_fmt)
+insights_logger.addHandler(_insights_sh)
+
+insights_logger.info("=" * 80)
+insights_logger.info("AI Insights Conversation Logger Initialized")
+insights_logger.info("=" * 80)
+
 # Test logging
 logger.info("[Test] Logging system initialized.")
 logger.debug("[Test] This is a debug message.")

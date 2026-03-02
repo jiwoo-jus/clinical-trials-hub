@@ -76,7 +76,7 @@ class ChatService:
             print(f"[ChatService] Template: {prompt_template_name}, User Question: {user_question}")
             
             response = self.client.chat.completions.create(
-                model="gemini-3-pro-preview",
+                model="gemini-3.1-pro-preview",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant answering questions based on provided clinical trial information."},
                     {"role": "user", "content": prompt}

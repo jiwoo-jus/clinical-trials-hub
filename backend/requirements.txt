@@ -10,3 +10,4 @@ gunicorn
 aiohttp
 psycopg2-binary
 redis==5.0.1
+pdfminer.six

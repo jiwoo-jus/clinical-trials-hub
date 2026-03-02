@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
+from services import pmc_service
 from .extraction_logger import get_extraction_logger, ExtractionRecord
 
 
@@ -213,11 +214,21 @@ class ExtractionPipeline:
         recurse(data, prefix)
         return fields
     
+    def _select_prompt_input_format(self, prompt_file: str, prompt_profile: str | None = None) -> str:
+        if prompt_profile == "phase1" and prompt_file == "ie/phase1/1_toxicity.md":
+            return "pdf"
+
+        if prompt_file.startswith("ie/2_results_section/"):
+            return "pdf"
+
+        return "xml"
+
     async def extract_structured_info(
         self,
         paper_content: str,
         session_id: str = None,
-        prompt_profile: str | None = None
+        prompt_profile: str | None = None,
+        pmc_id: str | None = None
     ) -> dict:
         """Extract structured data by asynchronously calling multiple divided prompts"""
         if not self.async_client:
@@ -274,6 +285,20 @@ class ExtractionPipeline:
         for folder in group_mapping:
             group_key = group_mapping[folder]
             aggregated_data[group_key] = {}
+
+        # Prepare input contents by format
+        input_contents = {"xml": paper_content}
+        needs_pdf = any(
+            self._select_prompt_input_format(prompt_file, prompt_profile) == "pdf"
+            for prompt_file in prompt_files
+        )
+        if needs_pdf and pmc_id:
+            try:
+                input_contents["pdf"] = pmc_service.get_pmc_pdf_text(pmc_id)
+            except Exception as e:
+                print(f"[ExtractionPipeline] Warning: PDF input unavailable for {pmc_id}: {e}")
+        if "pdf" not in input_contents:
+            input_contents["pdf"] = paper_content
         
         tasks = []
         # Create asynchronous tasks for each prompt file
@@ -287,7 +312,9 @@ class ExtractionPipeline:
                 print(f"[ExtractionPipeline] Warning: Prompt file '{prompt_file}' does not belong to any defined group. Skipping.")
                 continue
             
-            task = asyncio.create_task(self.process_prompt_file(prompt_file, paper_content, session_id, group))
+            input_format = self._select_prompt_input_format(prompt_file, prompt_profile)
+            input_content = input_contents.get(input_format, paper_content)
+            task = asyncio.create_task(self.process_prompt_file(prompt_file, input_content, session_id, group))
             tasks.append((group, prompt_file, task))
         
         # Wait for all tasks to complete and merge results by group
@@ -360,7 +387,7 @@ class ExtractionPipeline:
         logger.log_cache_usage(session_id, used_cache)
         print(f"[ExtractionPipeline] No valid cached data found for {pmc_id}. Generating new data...")
         
-        result = await self.extract_structured_info(paper_content, session_id, prompt_profile)
+        result = await self.extract_structured_info(paper_content, session_id, prompt_profile, pmc_id)
         
         try:
             with open(cache_file, "w", encoding="utf-8") as f:
@@ -405,7 +432,7 @@ class ExtractionPipeline:
         logger.log_cache_usage(session_id, used_cache, cache_validation_applied)
         print(f"[ExtractionPipeline] No valid cached data found for {pmc_id}. Generating new data...")
         
-        result = await self.extract_structured_info(paper_content, session_id, prompt_profile)
+        result = await self.extract_structured_info(paper_content, session_id, prompt_profile, pmc_id)
         
         try:
             with open(cache_file, "w", encoding="utf-8") as f:
@@ -552,9 +579,9 @@ async def process_prompt_file(prompt_file: str, paper_content: str, client=None)
     return await get_extraction_pipeline().process_prompt_file(prompt_file, paper_content)
 
 
-async def extract_structured_info(paper_content: str, prompt_profile: str | None = None) -> dict:
+async def extract_structured_info(paper_content: str, prompt_profile: str | None = None, pmc_id: str | None = None) -> dict:
     """Backward compatibility function for extract_structured_info"""
-    return await get_extraction_pipeline().extract_structured_info(paper_content, None, prompt_profile)
+    return await get_extraction_pipeline().extract_structured_info(paper_content, None, prompt_profile, pmc_id)
 
 
 async def get_structured_info_with_cache(
