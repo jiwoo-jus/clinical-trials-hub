@@ -15,7 +15,7 @@ A comprehensive platform that integrates PubMed articles and ClinicalTrials.gov 
   - Click “Create an API Key.” This will generate a unique alphanumeric key
 
 - **Azure OpenAI**: Get credentials from your Azure portal
-- **LiteLLM**: Configure your LiteLLM API credentials for GPT-4o access
+- **LiteLLM**: Configure your LiteLLM API credentials to route requests to supported LLM providers
 - **Firebase(Optional)**: Set up a Firebase project at https://console.firebase.google.com/
 - **AACT Database**: Download from https://aact.ctti-clinicaltrials.org/downloads and unzip. To import to PostgreSQL:
 
@@ -106,14 +106,29 @@ npm start
 If you use this pipeline in your research, please cite:
 
 ```bibtex
-@misc{park2025clinicaltrialshubbridgingregistriesliterature,
-      title={ClinicalTrialsHub: Bridging Registries and Literature for Comprehensive Clinical Trial Access}, 
-      author={Jiwoo Park and Ruoqi Liu and Avani Jagdale and Andrew Srisuwananukorn and Jing Zhao and Lang Li and Ping Zhang and Sachin Kumar},
-      year={2025},
-      eprint={2512.08193},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2512.08193}, 
+@inproceedings{park-etal-2026-clinicaltrialshub,
+    title = "{C}linical{T}rials{H}ub: Bridging Registries and Literature for Comprehensive Clinical Trial Access",
+    author = "Park, Jiwoo  and
+      Liu, Ruoqi  and
+      Jagdale, Avani  and
+      Srisuwananukorn, Andrew  and
+      Zhao, Jing  and
+      Li, Lang  and
+      Zhang, Ping  and
+      Kumar, Sachin",
+    editor = "Croce, Danilo  and
+      Leidner, Jochen  and
+      Moosavi, Nafise Sadat",
+    booktitle = "Proceedings of the 19th Conference of the {E}uropean Chapter of the {A}ssociation for {C}omputational {L}inguistics (Volume 3: System Demonstrations)",
+    month = mar,
+    year = "2026",
+    address = "Rabat, Marocco",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2026.eacl-demo.26/",
+    doi = "10.18653/v1/2026.eacl-demo.26",
+    pages = "359--396",
+    ISBN = "979-8-89176-382-1",
+    abstract = "We present ClinicalTrialsHub, an interactive search-focused platform that consolidates all data from ClinicalTrials.gov and augments it by automatically extracting and structuring trial-relevant information from PubMed research articles. Our system effectively increases access to structured clinical trial data by 83.8{\%} compared to relying on ClinicalTrials.gov alone, with potential to make access easier for patients, clinicians, researchers, and policymakers, advancing evidence-based medicine. ClinicalTrialsHub uses large language models such as GPT-5.1 and Gemini-3-Pro to enhance accessibility. The platform automatically parses full-text research articles to extract structured trial information, translates user queries into structured database searches, and provides an attributed question-answering system that generates evidence-grounded answers linked to specific source sentences. We demonstrate its utility through a user study involving clinicians, clinical researchers, and PhD students of pharmaceutical sciences and nursing, and a systematic automatic evaluation of its information extraction and question answering capabilities."
 }
 ```
 
