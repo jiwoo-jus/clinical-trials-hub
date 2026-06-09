@@ -11,7 +11,7 @@ insights_log = logging.getLogger("insights_conversations")  # Reference to dedic
 
 class InsightsService:
     def __init__(self):
-        self.openai_service = OpenAIService()
+        self.openai_service = OpenAIService(model_task="insights")
         self.cache_service = CacheService()
         self.ctg_service = CTGService()
         self.pm_service = PMService()
@@ -705,7 +705,8 @@ Provide helpful, accurate responses about the clinical research data. Be concise
                 prompt=message,
                 system_message=system_message,
                 max_tokens=800,
-                temperature=0.5
+                temperature=0.5,
+                model_task="chat",
             )
             
             return response

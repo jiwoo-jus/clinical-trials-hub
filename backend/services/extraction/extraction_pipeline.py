@@ -5,53 +5,41 @@ Dedicated pipeline for extracting structured data from clinical trial papers.
 Handles only Information Extraction (IE) tasks.
 """
 
-import os
 import json
 import asyncio
 from pathlib import Path
 from typing import Dict, List, Any
-import openai
 import time
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
+from config import LLM_EXTRACTION_CONCURRENCY
 from services import pmc_service
 from .extraction_logger import get_extraction_logger, ExtractionRecord
+from services.llm_client import (
+    build_chat_completion_params,
+    create_chat_client,
+    create_async_chat_completion,
+    create_chat_completion,
+    strip_markdown_code_fences,
+)
 
 
 class ExtractionPipeline:
-    """Dedicated pipeline for structured data extraction using LiteLLM"""
+    """Dedicated pipeline for structured data extraction using the configured LLM provider."""
     
     def __init__(self):
-        # Check environment variables
-        self.api_key = os.getenv("LITELLM_API_KEY")
-        self.base_url = os.getenv("LITELLM_BASE_URL")
-        
-        self.async_client = None
-        
-        # Validate environment variables
-        missing_vars = []
-        if not self.api_key:
-            missing_vars.append("LITELLM_API_KEY")
-        if not self.base_url:
-            missing_vars.append("LITELLM_BASE_URL")
-            
-        if missing_vars:
-            print(f"⚠️  Warning: LiteLLM environment variables are not set: {', '.join(missing_vars)}")
-            print("   Extraction functionality will be disabled.")
-            return
-        
-        # Initialize only the asynchronous client (IE tasks are performed asynchronously)
         try:
-            self.async_client = openai.AsyncOpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=180.0  # 3 minutes timeout for long-running extractions
-            )
-            print("✅ LiteLLM extraction pipeline initialization complete")
+            self.async_client, self.llm_settings = create_chat_client(async_client=True, timeout=180.0)
+            if self.async_client:
+                print(f"✅ {self.llm_settings.provider_label} extraction pipeline initialization complete")
+            else:
+                print(f"⚠️  Warning: {self.llm_settings.provider_label} client not initialized")
+                print("   Extraction functionality will be disabled.")
         except Exception as e:
-            print(f"⚠️  Warning: LiteLLM extraction pipeline initialization failed: {e}")
+            print(f"⚠️  Warning: LLM extraction pipeline initialization failed: {e}")
             self.async_client = None
+            self.llm_settings = None
     
     def load_prompt(self, file_name: str, variables: dict) -> str:
         """Load prompt template and replace variables (for IE tasks only)"""
@@ -76,7 +64,7 @@ class ExtractionPipeline:
     async def process_prompt_file(self, prompt_file: str, paper_content: str, session_id: str = None, group: str = None) -> dict:
         """Process asynchronous streaming response for a single prompt file"""
         if not self.async_client:
-            return {f"error_{prompt_file}": "LiteLLM async client not initialized"}
+            return {f"error_{prompt_file}": "LLM async client not initialized"}
             
         try:
             prompt = self.load_prompt(prompt_file, {"pmc_text": paper_content})
@@ -94,17 +82,19 @@ class ExtractionPipeline:
                 start_time_iso = datetime.now().isoformat()
                 print(f'[ExtractionPipeline] Processing {prompt_file} at {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(call_start))}')
                 
-                response_stream = await self.async_client.chat.completions.create(
-                    model="GPT-5",
+                request_params = build_chat_completion_params(
+                    self.llm_settings,
+                    task="extraction",
                     messages=[
                         {"role": "system", "content": "You are an expert assistant trained to extract structured data in JSON format from clinical trial articles."},
                         {"role": "user", "content": prompt}
                     ],
-                    response_format={"type": "json_object"},
+                    response_format="json",
                     stream=True,
                     temperature=1,
-                    seed=42
+                    seed=42,
                 )
+                response_stream = await create_async_chat_completion(self.async_client, self.llm_settings, request_params)
                 
                 async for chunk in response_stream:
                     if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
@@ -122,7 +112,7 @@ class ExtractionPipeline:
                     await asyncio.sleep(1)
                     continue
                 
-                content = ''.join(collected_messages)
+                content = strip_markdown_code_fences(''.join(collected_messages))
                 partial_data = json.loads(content)
                 
                 # Extracted fields logging
@@ -193,6 +183,17 @@ class ExtractionPipeline:
                         logger.log_extraction_record(session_id, record)
                     return {f"error_{prompt_file}": f"Failed after retries: {type(e).__name__} - {str(e)}"}
                 await asyncio.sleep(1)
+
+    async def _process_prompt_file_with_limit(
+        self,
+        semaphore: asyncio.Semaphore,
+        prompt_file: str,
+        paper_content: str,
+        session_id: str = None,
+        group: str = None
+    ) -> dict:
+        async with semaphore:
+            return await self.process_prompt_file(prompt_file, paper_content, session_id, group)
     
     def _extract_field_paths(self, data: dict, prefix: str = "") -> List[str]:
         """Extract list of field paths from data"""
@@ -232,7 +233,7 @@ class ExtractionPipeline:
     ) -> dict:
         """Extract structured data by asynchronously calling multiple divided prompts"""
         if not self.async_client:
-            return {"error": "OpenAI async client not initialized"}
+            return {"error": "LLM async client not initialized"}
             
         start_time = time.time()
         logger = get_extraction_logger()
@@ -301,6 +302,7 @@ class ExtractionPipeline:
             input_contents["pdf"] = paper_content
         
         tasks = []
+        semaphore = asyncio.Semaphore(LLM_EXTRACTION_CONCURRENCY)
         # Create asynchronous tasks for each prompt file
         for prompt_file in prompt_files:
             group = None
@@ -314,7 +316,15 @@ class ExtractionPipeline:
             
             input_format = self._select_prompt_input_format(prompt_file, prompt_profile)
             input_content = input_contents.get(input_format, paper_content)
-            task = asyncio.create_task(self.process_prompt_file(prompt_file, input_content, session_id, group))
+            task = asyncio.create_task(
+                self._process_prompt_file_with_limit(
+                    semaphore,
+                    prompt_file,
+                    input_content,
+                    session_id,
+                    group
+                )
+            )
             tasks.append((group, prompt_file, task))
         
         # Wait for all tasks to complete and merge results by group
@@ -491,10 +501,9 @@ class ExtractionPipeline:
             return article_text, year
 
     
-        try:
-            client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
-        except Exception as e:
-            raise Exception(f"Failed to initialize OpenAI client: {e}")
+        client, llm_settings = create_chat_client()
+        if not client:
+            raise Exception("Failed to initialize LLM client: missing provider configuration")
 
         results = {}
         x = 0
@@ -519,14 +528,16 @@ class ExtractionPipeline:
                 '''
                 prompt = prompt.replace("article_text_here", article_text)
 
-                response = client.chat.completions.create(
-                    model="gemini-2.5-flash",
+                request_params = build_chat_completion_params(
+                    llm_settings,
+                    task="metadata",
                     messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"},
+                    response_format="json",
                     temperature=0,
                 )
+                response = create_chat_completion(client, llm_settings, request_params)
 
-                content = response.choices[0].message.content.strip()
+                content = strip_markdown_code_fences(response.choices[0].message.content)
                 parsed = json.loads(content)
                 results[pmcid] = {
                     "study_type": parsed['studyType'] or "UNKNOWN",

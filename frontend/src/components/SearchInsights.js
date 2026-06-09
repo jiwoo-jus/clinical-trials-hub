@@ -35,7 +35,16 @@ const SearchInsights = ({ searchKey, page, appliedFilters, results }) => {
       // Always use page 1 for initial insights generation
       const data = await generateInsights(searchKey, 1, appliedFilters);
       console.log('[Insights] Generated insights:', data);
+      if (data.skipped) {
+        console.log('[Insights] Generation skipped:', data.reason);
+        setInsights(null);
+        return;
+      }
       const newInsights = data.insights;
+      if (!newInsights) {
+        setInsights(null);
+        return;
+      }
       setInsights(newInsights);
       
       // Cache the insights

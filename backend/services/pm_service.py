@@ -589,9 +589,11 @@ async def fetch_single_subchunk(chunk_ids, api_info, session):
         "id": ",".join(chunk_ids),
         "retmode": "xml",
         "tool": NCBI_TOOL_NAME,
-        "email": api_info[1],
-        "api_key": api_info[0]
     }
+    if api_info and api_info[1]:
+        params["email"] = api_info[1]
+    if api_info and api_info[0]:
+        params["api_key"] = api_info[0]
     url = NCBI_EFETCH
     xml_content = ""
     try:

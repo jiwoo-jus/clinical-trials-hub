@@ -4,45 +4,41 @@ Query Refinement Service
 Responsible for improving user search queries.
 """
 
-import os
 import json
-from typing import Dict
-import openai
 from pathlib import Path
+from services.llm_client import (
+    build_chat_completion_params,
+    create_chat_client,
+    create_chat_completion,
+    strip_markdown_code_fences,
+)
 
 
 class QueryService:
-    """Query refinement service using LiteLLM"""
+    """Query refinement service using the configured LLM provider."""
     
     def __init__(self):
-        # Check environment variables
-        self.api_key = os.getenv("LITELLM_API_KEY")
-        self.base_url = os.getenv("LITELLM_BASE_URL")
-        
-        self.client = None
-        
-        # Validate environment variables
-        missing_vars = []
-        if not self.api_key:
-            missing_vars.append("LITELLM_API_KEY")
-        if not self.base_url:
-            missing_vars.append("LITELLM_BASE_URL")
-            
-        if missing_vars:
-            print(f"⚠️  Warning: LiteLLM environment variables not set: {', '.join(missing_vars)}")
-            print("   Query refinement feature will be disabled.")
-            return
-        
-        # Initialize client
         try:
-            self.client = openai.OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url
-            )
-            print("✅ LiteLLM query refinement client initialized")
+            self.client, self.llm_settings = create_chat_client()
+            if self.client:
+                print(f"✅ {self.llm_settings.provider_label} query refinement client initialized")
+            else:
+                print(f"⚠️  Warning: {self.llm_settings.provider_label} client not initialized")
+                print("   Query refinement feature will be disabled.")
         except Exception as e:
-            print(f"⚠️  Warning: Failed to initialize LiteLLM query refinement client: {e}")
+            print(f"⚠️  Warning: Failed to initialize LLM query refinement client: {e}")
             self.client = None
+            self.llm_settings = None
+
+    def _create_json_completion(self, messages: list[dict[str, str]]):
+        request_params = build_chat_completion_params(
+            self.llm_settings,
+            task="query",
+            messages=messages,
+            response_format="json",
+            temperature=0,
+        )
+        return create_chat_completion(self.client, self.llm_settings, request_params)
     
     def load_prompt(self, file_name: str, variables: dict) -> str:
         """Load prompt template and substitute variables"""
@@ -67,7 +63,7 @@ class QueryService:
     def refine_query(self, input_data: dict) -> dict:
         """Refine query"""
         if not self.client:
-            return {"error": "LiteLLM client not initialized"}
+            return {"error": "LLM client not initialized"}
             
         print("[QueryService] Refining query")
         
@@ -77,17 +73,14 @@ class QueryService:
                 "inputData": json.dumps(input_data, ensure_ascii=False, indent=2)
             })
             
-            response = self.client.chat.completions.create(
-                model="GPT-4o",
-                messages=[
+            response = self._create_json_completion(
+                [
                     {"role": "system", "content": prompt_system},
                     {"role": "user", "content": prompt_user}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0
+                ]
             )
             
-            refined_query = response.choices[0].message.content.strip()
+            refined_query = strip_markdown_code_fences(response.choices[0].message.content)
             try:
                 parsed = json.loads(refined_query)
                 # Clean None values
@@ -137,7 +130,7 @@ class QueryService:
         
         """Refine query"""
         if not self.client:
-            return {"error": "LiteLLM client not initialized"}
+            return {"error": "LLM client not initialized"}
             
         print("[QueryService] Generating patient query")
         
@@ -147,17 +140,14 @@ class QueryService:
                 "patientQuery": input_data.get("user_query"),
                 "promptLines": final_prompt
             })
-            response = self.client.chat.completions.create(
-                model="GPT-4o",
-                messages=[
+            response = self._create_json_completion(
+                [
                     {"role": "system", "content": prompt_system},
                     {"role": "user", "content": prompt_user}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0
+                ]
             )
             
-            refined_query = response.choices[0].message.content.strip()
+            refined_query = strip_markdown_code_fences(response.choices[0].message.content)
             try:
                 parsed = json.loads(refined_query)
                 final_data = {
@@ -185,7 +175,7 @@ class QueryService:
         
     def generate_patient_variations(self, input_data: dict) -> dict:
         if not self.client:
-            return {"error": "LiteLLM client not initialized"}
+            return {"error": "LLM client not initialized"}
             
         print("[QueryService] Generating expanded patient query")
 
@@ -282,17 +272,14 @@ class QueryService:
                 "inputData": json.dumps(input_data, ensure_ascii=False, indent=2),
                 "queryRules": "\n".join(query_prompts)
             })
-            response = self.client.chat.completions.create(
-                model="GPT-4o",
-                messages=[
+            response = self._create_json_completion(
+                [
                     {"role": "system", "content": prompt_system},
                     {"role": "user", "content": prompt_user}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0
+                ]
             )
             
-            refined_query = response.choices[0].message.content.strip()
+            refined_query = strip_markdown_code_fences(response.choices[0].message.content)
             try:
                 parsed = json.loads(refined_query)
                 return parsed    
@@ -303,22 +290,22 @@ class QueryService:
             return {"error": f"Query generation failed: {e}"}
 
     def generate_query_terms(self, input_data: dict) -> dict:
+        if not self.client:
+            return {"error": "LLM client not initialized"}
+
         try:
             prompt_system = self.load_prompt("build_dynamic_queries_system.md", {})
             prompt_user = self.load_prompt("build_dynamic_queries_user.md", {
                 "inputData": json.dumps(input_data, ensure_ascii=False, indent=2),
             })
-            response = self.client.chat.completions.create(
-                model="GPT-4o",
-                messages=[
+            response = self._create_json_completion(
+                [
                     {"role": "system", "content": prompt_system},
                     {"role": "user", "content": prompt_user}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0
+                ]
             )
             
-            query_terms = response.choices[0].message.content.strip()
+            query_terms = strip_markdown_code_fences(response.choices[0].message.content)
             try:
                 parsed = json.loads(query_terms)
                 return parsed    

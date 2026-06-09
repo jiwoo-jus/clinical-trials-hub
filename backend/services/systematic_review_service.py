@@ -156,7 +156,7 @@ class SystematicReviewService:
     """Service for checking systematic review eligibility criteria"""
     
     def __init__(self):
-        self.openai_service = OpenAIService()
+        self.openai_service = OpenAIService(model_task="systematic_review")
         self._load_prompts()
     
     def _load_prompts(self):

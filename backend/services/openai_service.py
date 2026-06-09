@@ -1,58 +1,43 @@
-import os
-import json
 import logging
-from typing import Optional
-import openai
+from services.llm_client import (
+    build_chat_completion_params,
+    create_chat_client,
+    create_chat_completion,
+    strip_markdown_code_fences,
+)
 
 logger = logging.getLogger(__name__)
 insights_log = logging.getLogger("insights_conversations")  # Reference to dedicated logger
 
 class OpenAIService:
-    def __init__(self):
-        # Check LiteLLM environment variables
-        self.api_key = os.getenv("LITELLM_API_KEY")
-        self.base_url = os.getenv("LITELLM_BASE_URL")
-        
-        self.client = None
-        
-        # Validate environment variables
-        missing_vars = []
-        if not self.api_key:
-            missing_vars.append("LITELLM_API_KEY")
-        if not self.base_url:
-            missing_vars.append("LITELLM_BASE_URL")
-            
-        if missing_vars:
-            logger.warning(f"LiteLLM environment variables not set: {', '.join(missing_vars)}")
-            logger.warning("Using mock response.")
-            return
-        
-        # Initialize LiteLLM client
+    def __init__(self, model_task: str = "insights"):
+        self.model_task = model_task
         try:
-            self.client = openai.OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url
-            )
-            logger.info("✅ LiteLLM client initialized")
+            self.client, self.llm_settings = create_chat_client()
+            if self.client:
+                logger.info("✅ %s client initialized", self.llm_settings.provider_label)
+            else:
+                logger.warning("%s client not available. Using mock response.", self.llm_settings.provider_label)
         except Exception as e:
-            logger.warning(f"Failed to initialize LiteLLM client: {e}")
+            logger.warning(f"Failed to initialize LLM client: {e}")
             self.client = None
+            self.llm_settings = None
         
     def generate_completion(self, prompt: str, system_message: str = None, 
                           max_tokens: int = 1000, temperature: float = 0, 
-                          response_format: str = None) -> str:
+                          response_format: str = None, model_task: str = None) -> str:
         """
-        Generate a completion using LiteLLM's Chat API
+        Generate a completion using the configured LLM provider.
         """
         try:
             if not self.client:
                 # Return mock response for testing
-                logger.info("Using mock response (LiteLLM client not available)")
+                logger.info("Using mock response (LLM client not available)")
                 mock = self._generate_mock_response(prompt)
 
                 # ── Log: mock response ──────────────────────────────────────
                 insights_log.info("━" * 80)
-                insights_log.info("[OPENAI REQUEST] ※ Mock mode (LiteLLM client not available)")
+                insights_log.info("[OPENAI REQUEST] ※ Mock mode (LLM client not available)")
                 if system_message:
                     insights_log.info("── SYSTEM MESSAGE ──")
                     insights_log.info(system_message)
@@ -71,11 +56,15 @@ class OpenAIService:
                 messages.append({"role": "system", "content": system_message})
             
             messages.append({"role": "user", "content": prompt})
+            task = model_task or self.model_task
+            model = self.llm_settings.model_for_task(task)
 
             # ── Log: before actual API request ──────────────────────────────
             insights_log.info("━" * 80)
-            insights_log.info("[OPENAI REQUEST] → LiteLLM API call")
-            insights_log.info(f"  model      : GPT-5")
+            insights_log.info(f"[OPENAI REQUEST] → {self.llm_settings.provider_label} API call")
+            insights_log.info(f"  provider   : {self.llm_settings.provider}")
+            insights_log.info(f"  model      : {model}")
+            insights_log.info(f"  task       : {task}")
             insights_log.info(f"  max_tokens : {max_tokens}")
             insights_log.info(f"  temperature: {temperature}")
             insights_log.info(f"  response_format: {response_format}")
@@ -87,32 +76,20 @@ class OpenAIService:
             insights_log.info("── (API call in progress) ──")
             # ────────────────────────────────────────────────────────────
             
-            logger.info("Calling LiteLLM API...")
+            logger.info("Calling %s API...", self.llm_settings.provider_label)
             
-            # Prepare request parameters
-            request_params = {
-                "model": "GPT-5",
-                "messages": messages,
-                "max_tokens": max_tokens,
-                # "temperature": temperature  # GPT-5: temperature not supported, using system default
-            }
-            
-            # response_format json_object: not supported in GPT-5, so not used
-            # Instead, JSON response is requested via the prompt
-            # if response_format == "json":
-            #     request_params["response_format"] = {"type": "json_object"}
-            
-            response = self.client.chat.completions.create(**request_params)
+            request_params = build_chat_completion_params(
+                self.llm_settings,
+                task=task,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_format=response_format,
+            )
+            response = create_chat_completion(self.client, self.llm_settings, request_params)
             
             result = response.choices[0].message.content
-            result = result.strip() if result else ""
-
-            # Strip markdown code fences (GPT-5 doesn't support response_format=json_object)
-            if result.startswith("```"):
-                lines = result.splitlines()
-                # Remove opening fence (```json or ```) and closing fence (```)
-                lines = [l for l in lines if not l.strip().startswith("```")]
-                result = "\n".join(lines).strip()
+            result = strip_markdown_code_fences(result)
 
             # ── Log: actual API response ─────────────────────────────────────
             usage = getattr(response, "usage", None)
@@ -131,11 +108,11 @@ class OpenAIService:
             insights_log.info("━" * 80)
             # ────────────────────────────────────────────────────────────
 
-            logger.info("✅ LiteLLM API call successful")
+            logger.info("✅ %s API call successful", self.llm_settings.provider_label)
             return result
             
         except Exception as e:
-            logger.error(f"Error generating LiteLLM completion: {str(e)}")
+            logger.error(f"Error generating LLM completion: {str(e)}")
             insights_log.error(f"[OPENAI REQUEST ERROR] {str(e)}")
             logger.info("Falling back to mock response")
             return self._generate_mock_response(prompt)

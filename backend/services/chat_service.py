@@ -4,45 +4,31 @@ Chat Service
 Responsible for the question and answer function regarding the content of the paper
 """
 
-import os
 import json
-from typing import Dict
-import openai
 from pathlib import Path
+from services.llm_client import (
+    build_chat_completion_params,
+    create_chat_client,
+    create_chat_completion,
+    strip_markdown_code_fences,
+)
 
 
 class ChatService:
-    """Q&A service for papers using LiteLLM"""
+    """Q&A service for papers using the configured LLM provider."""
     
     def __init__(self):
-        # Check environment variables
-        self.api_key = os.getenv("LITELLM_API_KEY")
-        self.base_url = os.getenv("LITELLM_BASE_URL")
-        
-        self.client = None
-        
-        # Validate environment variables
-        missing_vars = []
-        if not self.api_key:
-            missing_vars.append("LITELLM_API_KEY")
-        if not self.base_url:
-            missing_vars.append("LITELLM_BASE_URL")
-            
-        if missing_vars:
-            print(f"⚠️  Warning: LiteLLM environment variables are not set: {', '.join(missing_vars)}")
-            print("   Chat function will be disabled.")
-            return
-        
-        # Initialize client
         try:
-            self.client = openai.OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url
-            )
-            print("✅ LiteLLM chat client initialization complete")
+            self.client, self.llm_settings = create_chat_client()
+            if self.client:
+                print(f"✅ {self.llm_settings.provider_label} chat client initialization complete")
+            else:
+                print(f"⚠️  Warning: {self.llm_settings.provider_label} client not initialized")
+                print("   Chat function will be disabled.")
         except Exception as e:
-            print(f"⚠️  Warning: LiteLLM chat client initialization failed: {e}")
+            print(f"⚠️  Warning: LLM chat client initialization failed: {e}")
             self.client = None
+            self.llm_settings = None
     
     def load_prompt(self, file_name: str, variables: dict) -> str:
         """Load prompt template and replace variables"""
@@ -67,7 +53,7 @@ class ChatService:
     def chat_with_prompt(self, prompt_template_name: str, variables: dict) -> dict:
         """Chat using prompt template"""
         if not self.client:
-            return {"answer": "Error: LiteLLM client not initialized", "evidence": []}
+            return {"answer": "Error: LLM client not initialized", "evidence": []}
             
         try:
             prompt = self.load_prompt(prompt_template_name, variables)
@@ -75,18 +61,20 @@ class ChatService:
             
             print(f"[ChatService] Template: {prompt_template_name}, User Question: {user_question}")
             
-            response = self.client.chat.completions.create(
-                model="gemini-3.1-pro-preview",
+            request_params = build_chat_completion_params(
+                self.llm_settings,
+                task="chat",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant answering questions based on provided clinical trial information."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
-                temperature=0
+                response_format="json",
+                temperature=0,
             )
+            response = create_chat_completion(self.client, self.llm_settings, request_params)
             
             print(f"[ChatService] Model: {response.model}, Response received.")
-            result_text = response.choices[0].message.content.strip()
+            result_text = strip_markdown_code_fences(response.choices[0].message.content)
             
             try:
                 parsed = json.loads(result_text)
@@ -103,7 +91,7 @@ class ChatService:
     def chat_about_paper(self, source: str, paper_content: str, user_question: str) -> dict:
         """Q&A about the paper"""
         if not self.client:
-            return {"answer": "Error: LiteLLM client not initialized", "evidence": []}
+            return {"answer": "Error: LLM client not initialized", "evidence": []}
             
         if source == 'CTG':
             try:

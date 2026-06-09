@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
+from services.cache_service import CacheService
 from services.insights_service import InsightsService
 import logging
 
@@ -30,6 +31,22 @@ async def generate_insights(request: GenerateInsightsRequest):
     """
     try:
         logger.info(f"Generating insights for search_key: {request.search_key}, page: {request.page}")
+
+        cache_service = CacheService()
+        search_results = cache_service.get_search_results(request.search_key, 1)
+        if not search_results:
+            logger.info(
+                "Skipping insights generation because search results are not in backend cache: %s",
+                request.search_key
+            )
+            return {
+                "insights": None,
+                "page": request.page,
+                "insights_key": None,
+                "from_cache": False,
+                "skipped": True,
+                "reason": "Search results not found in backend cache"
+            }
         
         # Generate insights using the service
         insights_service = InsightsService()
